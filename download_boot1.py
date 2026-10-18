@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Extract boot1 directly from Nintendo Update Server (NUS) Title 00050010-10000100.
-Decryption uses WUP title ticket & key with Wii U Common Key read from otp.bin.
+Download boot1 from the Nintendo Update Server (NUS), title 00050010-10000100,
+and decrypt it with the common key read from otp.bin.
 """
 
 import os
@@ -10,7 +10,7 @@ import argparse
 import urllib.request
 import struct
 from Crypto.Cipher import AES
-from boot1 import parse_boot1, ANCAST_MAGIC
+from slctools.boot1 import parse_boot1, ANCAST_MAGIC
 
 TITLE_ID_HEX = "0005001010000100"
 TITLE_ID = bytes.fromhex(TITLE_ID_HEX)
@@ -24,7 +24,7 @@ def read_common_key_from_otp(otp_path):
         raise ValueError(f"Could not read 16-byte common key from {otp_path} at offset 0xE0")
     return common_key
 
-def extract_boot1_from_nus(otp_path="otp.bin", output_path="boot1.bin", patch_prod=True):
+def download_boot1(otp_path, output_path, patch_prod=True):
     print(f"Reading Wii U Common Key from {otp_path} (offset 0xE0)...")
     common_key = read_common_key_from_otp(otp_path)
 
@@ -71,20 +71,23 @@ def extract_boot1_from_nus(otp_path="otp.bin", output_path="boot1.bin", patch_pr
     decrypted_boot1 = decrypted_boot1[:len(image)]
     print(f"boot1 v{version}, hash ok")
 
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     with open(output_path, "wb") as f:
         f.write(decrypted_boot1)
 
-    print(f"Successfully extracted boot1 to {output_path} ({len(decrypted_boot1)} bytes)")
+    print(f"Wrote boot1 to {output_path} ({len(decrypted_boot1)} bytes)")
     return output_path
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract boot1 from NUS (Title 00050010-10000100)")
-    parser.add_argument("--otp", default="otp.bin", help="Path to otp.bin file containing keys (default: otp.bin)")
-    parser.add_argument("--output", "-o", default="boot1.bin", help="Output file path for boot1 (default: boot1.bin)")
+    parser = argparse.ArgumentParser(description="Download boot1 from NUS (title 00050010-10000100)")
+    parser.add_argument("--otp", default="input/otp.bin", help="otp.bin to read the common key from (default: input/otp.bin)")
+    parser.add_argument("--output", "-o", default="rebuild/boot1.bin", help="Output file for boot1 (default: rebuild/boot1.bin)")
     parser.add_argument("--no-patch", action="store_true", help="Do not patch Ancast magic 0xEFAB82D9 to 0xEFA282D9")
     args = parser.parse_args()
 
-    extract_boot1_from_nus(otp_path=args.otp, output_path=args.output, patch_prod=not args.no_patch)
+    download_boot1(args.otp, args.output, patch_prod=not args.no_patch)
 
 if __name__ == "__main__":
     main()

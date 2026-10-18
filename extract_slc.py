@@ -3,8 +3,8 @@
 import argparse
 import os
 import sys
-from nand import *
-from boot1 import read_boot1
+from slctools.nand import *
+from slctools.boot1 import read_boot1
 
 def extract_file(nand, entry, output_path):
     entry_full_path = f"{entry.path}{entry.name}"
@@ -153,60 +153,76 @@ def find_target_entry(root_entry, target_path):
 
     return None
 
-def resolve_output_path(base_dir, rel_path, is_file=False, is_single_target=False):
-    if not rel_path:
-        return base_dir
-    if is_single_target and base_dir != ".":
-        # If user specified a file-like output_dir path (e.g. -o /tmp/cos.xml) for a single file target
-        if is_file and os.path.splitext(base_dir)[1] != "" and not os.path.isdir(base_dir):
-            return base_dir
-    return os.path.join(base_dir, rel_path)
+def write_permissions(root_entry, output_path):
+    """Writes mode/attr/uid/gid of every FST entry, so build_slc.py can repack
+    the tree with exactly the metadata it had."""
+    print(f"Writing FST metadata -> {output_path}")
+    parent_dir = os.path.dirname(output_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
+    with open(output_path, "w") as f:
+        f.write("# FST metadata extracted from SLC image: mode attr uid gid path\n")
+        def walk(entry, path):
+            f.write(f"0x{entry.mode:02x} 0x{entry.attr:02x} 0x{entry.uid:08x} 0x{entry.gid:04x} {path or '/'}\n")
+            if not entry.is_file():
+                for child in entry.children():
+                    walk(child, f"{path}/{child.name}")
+        walk(root_entry, "")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract files, folders, boot1, or complete filesystem from a Wii U SLC image",
+        description="Extract files, folders, boot1, bad blocks or the complete filesystem from a Wii U SLC image",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Examples:
-  # Extract complete SLC (all files/folders, boot1, bad blocks) to current directory
-  python extract_slc.py --image SLC.RAW --otp otp.bin --all
+        epilog="""Layout of the output (rebuild) directory:
+  <dir>/slc/              SFFS files and folders (input for build_slc.py)
+  <dir>/boot1.bin         boot1 image
+  <dir>/bad_blocks.txt    bad block list
+  <dir>/permissions.txt   FST metadata of every entry (complete extraction only)
 
-  # Extract complete SLC to a specific output directory
-  python extract_slc.py --image SLC.RAW --otp otp.bin --all -o ./extracted_slc
+Examples:
+  # Extract everything from input/SLC.RAW (with input/otp.bin) into rebuild/
+  python3 extract_slc.py --all
 
-  # Extract specific files or folders
-  python extract_slc.py --image SLC.RAW --otp otp.bin -e /sys/config -o ./extracted_slc
-  python extract_slc.py --image SLC.RAW --otp otp.bin /sys/config /scfm.img boot1
+  # Only boot1 and the bad blocks (no otp.bin needed)
+  python3 extract_slc.py boot1 bad_blocks
 
-  # Legacy / raw component extraction
-  python extract_slc.py --image SLC.RAW --otp otp.bin --boot1 boot1.bin --scfm scfm.img --bad-blocks bad_blocks.txt
+  # Specific files or folders, into rebuild/slc/...
+  python3 extract_slc.py /sys/config /scfm.img
+
+  # Explicit paths
+  python3 extract_slc.py --image SLC.RAW --otp otp.bin --boot1 boot1.bin --bad-blocks bad_blocks.txt
 """
     )
-    parser.add_argument("--image", "-i", required=True, help="Input SLC.RAW file")
-    parser.add_argument("--otp", "-k", required=False, default=None, help="OTP bin file containing keys (not needed for --boot1 or --bad-blocks only, since those aren't encrypted)")
-    parser.add_argument("--output-dir", "-o", "--output", default=".", help="Base directory for extracted files/folders (default: .)")
-    parser.add_argument("--all", "-a", "--extract-all", action="store_true", help="Extract complete SLC (all SFFS files/folders, boot1, bad blocks)")
+    parser.add_argument("--image", "-i", default="input/SLC.RAW", help="Input SLC.RAW file (default: input/SLC.RAW)")
+    parser.add_argument("--otp", "-k", default=None, help="OTP of the console the dump belongs to (default: input/otp.bin if it exists; not needed for boot1 or bad blocks)")
+    parser.add_argument("--output-dir", "-o", "--output", default="rebuild", help="Rebuild directory to extract into (default: rebuild)")
+    parser.add_argument("--all", "-a", "--extract-all", action="store_true", help="Extract complete SLC (all SFFS files/folders, FST metadata, boot1, bad blocks)")
     parser.add_argument("--extract", "-e", action="append", default=[], help="Specific file(s) or folder(s) to extract from SFFS")
     parser.add_argument("paths", nargs="*", help="Specific file(s), folder(s), boot1, or bad_blocks to extract")
 
     # Specific component overrides
-    parser.add_argument("--boot1", nargs="?", const="boot1.bin", default=None, help="Output path for boot1.bin (validated image from the boot1 slots)")
-    parser.add_argument("--scfm", nargs="?", const="scfm.img", default=None, help="Output path for scfm.img")
-    parser.add_argument("--bad-blocks", nargs="?", const="bad_blocks.txt", default=None, help="Output path for bad blocks list")
+    parser.add_argument("--boot1", nargs="?", const="", default=None, help="Extract boot1 (optionally to this path instead of <dir>/boot1.bin)")
+    parser.add_argument("--scfm", nargs="?", const="", default=None, help="Extract scfm.img (optionally to this path instead of <dir>/slc/scfm.img)")
+    parser.add_argument("--bad-blocks", nargs="?", const="", default=None, help="Extract the bad block list (optionally to this path instead of <dir>/bad_blocks.txt)")
 
     args = parser.parse_args()
+    slc_dir = os.path.join(args.output_dir, "slc")
 
+    otp_path = args.otp
+    if otp_path is None and os.path.exists("input/otp.bin"):
+        otp_path = "input/otp.bin"
     otp_key = otp_hmac = None
-    if args.otp:
-        print("Reading OTP keys...")
-        with open(args.otp, 'rb') as f:
+    if otp_path:
+        print(f"Reading OTP keys from {otp_path}...")
+        with open(otp_path, 'rb') as f:
             f.seek(0x170)
             otp_key = f.read(0x10)
             f.seek(0x1E0)
             otp_hmac = f.read(0x14)
     else:
-        print("No --otp given: skipping key setup (boot1/bad-blocks extraction doesn't need it; SFFS file content does).")
+        print("No otp.bin: skipping key setup (boot1/bad-blocks extraction doesn't need it; SFFS file content does).")
 
-    print("Opening NAND image...")
+    print(f"Opening NAND image {args.image}...")
     nand = NANDFormatSpare(args.image)
     nand.set_keys(otp_key, otp_hmac)
 
@@ -219,16 +235,12 @@ def main():
         do_all = True
 
     # Bad blocks
-    if args.bad_blocks is not None:
-        extract_bad_blocks(nand, args.bad_blocks)
-    elif do_all or "bad_blocks" in user_targets or "bad_blocks.txt" in user_targets:
-        extract_bad_blocks(nand, os.path.join(args.output_dir, "bad_blocks.txt"))
+    if args.bad_blocks is not None or do_all or "bad_blocks" in user_targets or "bad_blocks.txt" in user_targets:
+        extract_bad_blocks(nand, args.bad_blocks or os.path.join(args.output_dir, "bad_blocks.txt"))
 
     # Boot1
-    if args.boot1 is not None:
-        extract_boot1(nand, args.boot1)
-    elif do_all or "boot1" in user_targets or "boot1.bin" in user_targets:
-        extract_boot1(nand, os.path.join(args.output_dir, "boot1.bin"))
+    if args.boot1 is not None or do_all or "boot1" in user_targets or "boot1.bin" in user_targets:
+        extract_boot1(nand, args.boot1 or os.path.join(args.output_dir, "boot1.bin"))
 
     # Dedicated --scfm flag
     if args.scfm is not None:
@@ -238,7 +250,7 @@ def main():
     sffs_targets = []
     if do_all:
         sffs_targets.append("/")
-    
+
     for t in user_targets:
         if t in ["boot1", "boot1.bin", "bad_blocks", "bad_blocks.txt"]:
             continue
@@ -250,7 +262,7 @@ def main():
                 sffs_targets.append(t)
 
     if sffs_targets:
-        if not args.otp:
+        if not otp_path:
             print("Error: extracting SFFS files/folders requires --otp (file content is encrypted).")
             sys.exit(1)
         print("Loading SFFS filesystem...")
@@ -258,7 +270,9 @@ def main():
         latest_superblock = SFFS(read_superblock(nand, superblock_cluster))
         root_entry = SFFS_entry(latest_superblock.fst, latest_superblock.fat, 0, "")
 
-        is_single_target = (len(sffs_targets) == 1 and not do_all)
+        if find_isfshax_slots(nand):
+            print("Warning: this SLC has isfshax. If the console relies on it, restore a repacked image only with the latest minute - it keeps the installed isfshax, older versions overwrite it and the console bricks.")
+
         total_files = 0
         total_dirs = 0
 
@@ -268,11 +282,8 @@ def main():
                 print(f"Error: Target '{target_path}' not found in SFFS filesystem!")
                 continue
 
-            rel_path = (entry.path + entry.name).lstrip("/")
-            out_path = resolve_output_path(args.output_dir, rel_path, is_file=entry.is_file(), is_single_target=is_single_target)
-            
-            # Special override if --scfm was explicitly set
-            if args.scfm and (target_path == "scfm.img" or entry.name == "scfm.img"):
+            out_path = os.path.join(slc_dir, (entry.path + entry.name).lstrip("/"))
+            if args.scfm and entry.name == "scfm.img":
                 out_path = args.scfm
 
             if entry.is_file():
@@ -282,10 +293,12 @@ def main():
                 total_files += f_count
                 total_dirs += d_count
 
+        if "/" in sffs_targets:
+            write_permissions(root_entry, os.path.join(args.output_dir, "permissions.txt"))
+
         print(f"Extraction complete: {total_files} file(s), {total_dirs} directory(ies) extracted.")
     else:
         print("Extraction complete.")
 
 if __name__ == "__main__":
     main()
-
