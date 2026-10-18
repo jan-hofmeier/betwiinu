@@ -1,14 +1,23 @@
 #!/bin/bash
 set -e
 
+OTP="$(realpath "${1:?usage: $0 <otp.bin>}")"
+if [ "$(stat -c%s "$OTP")" -ne 1024 ]; then
+    echo "Error: $OTP is not a 1024-byte otp.bin"
+    exit 1
+fi
+
 echo "Starting OSv10 setup for SLC rebuild..."
 
 # Paths
 BASE_DIR="$(pwd)"
 SLC_REBUILD="$BASE_DIR/slc_rebuild"
 JNUS_DIR="$BASE_DIR/jnus_test_build"
-JNUS_JAR="/home/jan/wiiu/jnus/JNUSTool.jar"
-JNUS_CONFIG="/home/jan/wiiu/jnus/config"
+JNUS_JAR="$(realpath "${JNUS_JAR:-JNUSTool.jar}")"
+if [ ! -f "$JNUS_JAR" ]; then
+    echo "Error: $JNUS_JAR not found. Put JNUSTool.jar in the working directory or set JNUS_JAR=/path/to/JNUSTool.jar"
+    exit 1
+fi
 
 # Target directories
 CODE_DIR="$SLC_REBUILD/sys/title/00050010/1000400a/code"
@@ -22,7 +31,18 @@ mkdir -p "$TICKET_DIR"
 mkdir -p "$JNUS_DIR"
 
 cd "$JNUS_DIR"
-cp "$JNUS_CONFIG" .
+# JNUSTool reads the common key from line 2 of its config; take it from the
+# OTP (0xE0) instead of keeping a copy of the key around, and remove it again
+# when done.
+COMMON_KEY="$(od -An -tx1 -j $((0xE0)) -N 16 "$OTP" | tr -d ' \n')"
+trap 'rm -f "$JNUS_DIR/config"' EXIT
+cat > config <<EOF_CONFIG
+http://ccs.cdn.wup.shop.nintendo.net/ccs/download
+$COMMON_KEY
+updatetitles.csv
+https://tagaya.wup.shop.nintendo.net/tagaya/versionlist/EUR/EU/latest_version
+https://tagaya-wup.cdn.nintendo.net/tagaya/versionlist/EUR/EU/list/%d.versionlist
+EOF_CONFIG
 
 echo "Downloading decrypted OSv10 files via JNUSTool..."
 java -jar "$JNUS_JAR" 000500101000400A > jnus_dec.log

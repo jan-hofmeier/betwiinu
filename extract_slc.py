@@ -4,6 +4,7 @@ import argparse
 import os
 import sys
 from nand import *
+from boot1 import read_boot1
 
 def extract_file(nand, entry, output_path):
     entry_full_path = f"{entry.path}{entry.name}"
@@ -45,31 +46,71 @@ def extract_directory(nand, entry, output_dir):
     return file_count, dir_count
 
 def extract_boot1(nand, output_path):
-    print(f"Extracting boot1.bin (clusters 0-0x3f) -> {output_path}")
+    print(f"Extracting boot1 -> {output_path}")
+    try:
+        version, image = read_boot1(nand)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
     parent_dir = os.path.dirname(output_path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
     with open(output_path, "wb") as f:
-        for cluster in range(0, 0x40):
-            f.write(nand.get_cluster(cluster))
+        f.write(image)
+    print(f"Wrote boot1 v{version} ({len(image)} bytes)")
+
+ISFSHAX_GENERATION_FIRST = 0xffff7fff
+ISFSHAX_MAGIC = b"HAXX"
+ISFSHAX_INFO_OFFSET = 0x3FFEC  # after header, FAT and FST
+
+def find_isfshax_slots(nand):
+    """Superblock slots used by isfshax. isfshax marks them bad in the FAT to
+    keep IOSU away, so they aren't really bad - unless isfshax itself flagged
+    one as bad in its info structure."""
+    start = TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER
+    for slot in range(NUM_SUPER):
+        cluster = start + slot * CLUSTER_PER_SUPER
+        header = nand.get_cluster(cluster)
+        if header[:4] != b"SFS!" or struct.unpack(">I", header[4:8])[0] < ISFSHAX_GENERATION_FIRST:
+            continue
+        info = read_superblock(nand, cluster)[ISFSHAX_INFO_OFFSET:ISFSHAX_INFO_OFFSET + 8]
+        if info[:4] == ISFSHAX_MAGIC:
+            # isfshax_slot: bad (bit 7), ecc_correctable (bit 6), slot (bits 0-5)
+            used = {s & 0x3f for s in info[4:8] if not s & 0x80}
+            print(f"isfshax found, its superblock slots {sorted(used)} are not counted as bad")
+            return used
+    return set()
+
+def find_fat_bad_blocks(nand):
+    """Blocks with clusters marked bad in the FAT of the newest superblock
+    (e.g. found bad by IOSU at runtime), excluding isfshax's slots."""
+    try:
+        superblock = SFFS(read_superblock(nand, find_newest_superblock(nand)))
+    except ValueError:
+        print("No SFFS superblock found (chip not used in a Wii U yet?), only checking spare markers")
+        return set()
+    start = TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER
+    isfshax_clusters = {start + slot * CLUSTER_PER_SUPER + i
+                        for slot in find_isfshax_slots(nand) for i in range(CLUSTER_PER_SUPER)}
+    return {c // 8 for c in range(TOTAL_CLUSTER)
+            if superblock.fat.get_cluster_entry(c) == FAT_CLUSTER_BAD and c not in isfshax_clusters}
 
 def extract_bad_blocks(nand, output_path):
     print(f"Scanning for bad blocks -> {output_path}")
-    bad_blocks = []
     num_blocks = int(getattr(nand, "blocks", 4096))
-    for block in range(num_blocks):
-        if nand.is_bad_block(block):
-            bad_blocks.append(block)
+    spare_bad = {block for block in range(num_blocks) if nand.is_bad_block(block)}
+    fat_bad = find_fat_bad_blocks(nand)
 
     parent_dir = os.path.dirname(output_path)
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
     with open(output_path, "w") as f:
         f.write("# Bad blocks list extracted from SLC image\n")
-        for block in bad_blocks:
-            f.write(f"0x{block:04X}\n")
-    print(f"Found {len(bad_blocks)} bad block(s).")
-    return len(bad_blocks)
+        for block in sorted(spare_bad | fat_bad):
+            source = " ".join(name for name, s in (("spare", spare_bad), ("FAT", fat_bad)) if block in s)
+            f.write(f"0x{block:04X}  # {source}\n")
+    print(f"Found {len(spare_bad | fat_bad)} bad block(s): {len(spare_bad)} marked in spare, {len(fat_bad)} in FAT.")
+    return len(spare_bad | fat_bad)
 
 def find_entry_by_path(root_entry, target_path):
     cleaned = target_path.strip("/")
@@ -148,7 +189,7 @@ def main():
     parser.add_argument("paths", nargs="*", help="Specific file(s), folder(s), boot1, or bad_blocks to extract")
 
     # Specific component overrides
-    parser.add_argument("--boot1", nargs="?", const="boot1.bin", default=None, help="Output path for boot1.bin (clusters 0-0x3f)")
+    parser.add_argument("--boot1", nargs="?", const="boot1.bin", default=None, help="Output path for boot1.bin (validated image from the boot1 slots)")
     parser.add_argument("--scfm", nargs="?", const="scfm.img", default=None, help="Output path for scfm.img")
     parser.add_argument("--bad-blocks", nargs="?", const="bad_blocks.txt", default=None, help="Output path for bad blocks list")
 

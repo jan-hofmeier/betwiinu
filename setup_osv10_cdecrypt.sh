@@ -1,8 +1,12 @@
 #!/bin/bash
 set -e
 
-# Default path for CDecrypt (can be overridden by user)
-CDECRYPT_CMD="${CDECRYPT_CMD:-/home/jan/wiiu/cdecrypt/cdecrypt}"
+# Encrypted title as downloaded by MLCRestorerDownloader
+# (output/SLC/<region>/000500101000400a, containing title.tmd/title.tik/*.app)
+MLC_DOWN_DIR="$(realpath "${1:?usage: $0 <MLCRestorerDownloader output dir of 000500101000400a>}")"
+
+# CDecrypt from PATH (can be overridden by user)
+CDECRYPT_CMD="${CDECRYPT_CMD:-cdecrypt}"
 
 if ! command -v $CDECRYPT_CMD &> /dev/null; then
     echo "Error: $CDECRYPT_CMD not found in PATH."
@@ -12,7 +16,6 @@ if ! command -v $CDECRYPT_CMD &> /dev/null; then
 fi
 
 BASE_DIR="$(pwd)"
-MLC_DOWN_DIR="/home/jan/Downloads/MLCRestorerDownloader_Linux_x86_64/output/SLC/EUR/000500101000400a"
 SLC_REBUILD="$BASE_DIR/slc_rebuild"
 CODE_DIR="$SLC_REBUILD/sys/title/00050010/1000400a/code"
 TICKET_DIR="$SLC_REBUILD/sys/rights/ticket/sys/0002"

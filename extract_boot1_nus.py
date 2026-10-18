@@ -10,6 +10,7 @@ import argparse
 import urllib.request
 import struct
 from Crypto.Cipher import AES
+from boot1 import parse_boot1, ANCAST_MAGIC
 
 TITLE_ID_HEX = "0005001010000100"
 TITLE_ID = bytes.fromhex(TITLE_ID_HEX)
@@ -60,6 +61,15 @@ def extract_boot1_from_nus(otp_path="otp.bin", output_path="boot1.bin", patch_pr
     if patch_prod and decrypted_boot1[:4] == bytes.fromhex("efab82d9"):
         decrypted_boot1[1] = 0xA2
         print(f"Patched Ancast header magic to Prod: {decrypted_boot1[:4].hex()}")
+
+    # Validate the hash and strip the content padding. The hash only covers
+    # the body, so check with the prod magic even if it wasn't patched.
+    try:
+        version, image = parse_boot1(ANCAST_MAGIC + bytes(decrypted_boot1[4:]))
+    except ValueError as e:
+        sys.exit(f"Error: downloaded boot1 is invalid: {e}")
+    decrypted_boot1 = decrypted_boot1[:len(image)]
+    print(f"boot1 v{version}, hash ok")
 
     with open(output_path, "wb") as f:
         f.write(decrypted_boot1)
