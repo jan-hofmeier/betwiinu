@@ -122,8 +122,11 @@ python3 build_slc.py --input-dir dir --output-image SLC.RAW --otp otp.bin \
 - **Building:** it allocates FAT clusters, builds the FST, encrypts and HMACs
   every cluster, and writes all 64 superblock slots.
   - The FAT uses the same markers as IOSU: `0xFFFE` free, `0xFFFB` end of
-    chain, `0xFFFC` reserved (both boot1 slots and the superblock area),
-    `0xFFFD` bad.
+    chain, `0xFFFC` reserved, `0xFFFD` bad.
+  - Reserved are both boot1 slots, the superblock area, and a pool of 96
+    blocks right below it (from 0x7900, skipping bad blocks). IOSU swaps
+    blocks it rewrites with blocks from that pool, so on a used SLC some
+    reserved blocks are scattered elsewhere; all real dumps have 96.
   - `scfm.img` is written unencrypted and without HMAC, like on a real
     console.
 - **`--otp`:** the target console's OTP (default `input/otp.bin`).

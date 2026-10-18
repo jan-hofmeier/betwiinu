@@ -12,6 +12,10 @@ BOOT1_CLUSTERS = len(BOOT1_SLOT_BLOCKS) * BOOT1_SLOT_CLUSTERS
 SUPERBLOCK_START = TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER
 CLUSTERS_PER_BLOCK = 8
 NUM_BLOCKS = TOTAL_CLUSTER // CLUSTERS_PER_BLOCK
+# IOSU keeps a pool of reserved blocks it swaps with blocks it rewrites. Real
+# SLCs have 96, starting right below the superblock area; without them ISFS
+# logs "Could not find any reserved blocks".
+RESERVED_POOL_BLOCKS = 96
 
 def set_fat_entries(fat, clusters, value):
     for c in clusters:
@@ -297,6 +301,16 @@ def main():
             print(f"Marking block 0x{b:04X} as bad...")
             output_nand.mark_bad_block(b)
             set_fat_entries(fat, range(b * CLUSTERS_PER_BLOCK, (b + 1) * CLUSTERS_PER_BLOCK), FAT_CLUSTER_BAD)
+
+    pool = []
+    block = SUPERBLOCK_START // CLUSTERS_PER_BLOCK - 1
+    while len(pool) < RESERVED_POOL_BLOCKS:
+        if block not in bad_blocks:
+            pool.append(block)
+        block -= 1
+    print(f"Reserving {len(pool)} blocks (0x{pool[-1]:03X}-0x{pool[0]:03X}) for IOSU's block pool")
+    for b in pool:
+        set_fat_entries(fat, range(b * CLUSTERS_PER_BLOCK, (b + 1) * CLUSTERS_PER_BLOCK), FAT_CLUSTER_RESERVED)
 
     print("Building FST and FAT...")
     flat_nodes = build_fst_tree(args.input_dir, fst, fat, args.scfm, permissions)
