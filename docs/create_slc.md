@@ -9,7 +9,8 @@ boot:
 - the config files `system.xml` and `sys_prod.xml`, generated from the
   console's serial.
 
-It has no other SLC system titles. They're installed afterwards (last step).
+It has no other system titles and no tickets for them. All system titles,
+including the ones on the MLC, are reinstalled afterwards (last step).
 
 All commands are run from the repository root. Details on each tool are in
 the [README](../README.md).
@@ -112,18 +113,35 @@ This builds `rebuild/SLC.RAW` from `rebuild/slc/`, `rebuild/boot1.bin` and
 2. Restore it with minute (*Restore SLC.RAW*). minute also syncs the boot1
    version in the SEEPROM.
 
-## 5. Install the other system titles
+## 5. Boot it once
 
-The new SLC only has OSv10. Install the remaining system titles with
-wafel_setup_mlc or by doing a system update. For wafel_setup_mlc, its
+Boot the console once with the new SLC, *without* `wafel_setup_mlc.ipx` in
+`sd:/wiiu/ios_plugins`. It crashes; that's expected, since the system titles
+are still missing. Power it off.
+
+Don't skip this: if wafel_setup_mlc runs on the very first boot of the new
+SLC, the setup gets stuck.
+
+## 6. Reinstall all system titles
+
+The new SLC only has OSv10, so **all** other system titles have to be
+installed again, the ones on the MLC included, even if the MLC is intact:
+- **Tickets:** the tickets of all titles, MLC titles too, are stored on the
+  SLC (`/sys/rights/ticket`). The new SLC only has OSv10's, so the system
+  can't use the titles on the MLC. Installing them writes their tickets back.
+- **scfm.img:** the SLC cache of the MLC (`/scfm.img`) isn't in the new SLC,
+  so whatever is on the MLC doesn't match it anymore.
+
+Use wafel_setup_mlc for this; its
 [README](https://github.com/StroopwafelCFW/wafel_setup_mlc#how-to-use) has the
 details. In short:
 
-1. Download the system titles with
+1. Download all system titles with
    [MLCRestorerDownloader](https://github.com/Xpl0itU/MLCRestorerDownloader)
    and copy the WUPs to `sd:/wafel_install`.
 2. Put `wafel_setup_mlc.ipx` and stroopwafel's `wafel_core.ipx` into
    `sd:/wiiu/ios_plugins`.
-3. Boot, and wait until the log says it's done.
-4. Power off and remove `wafel_setup_mlc.ipx`. The next boot starts the
+3. Erase the MLC
+4. Boot, and wait until the log says it's done.
+5. Power off and remove `wafel_setup_mlc.ipx`. The next boot starts the
    initial setup.
