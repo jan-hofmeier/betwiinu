@@ -45,8 +45,8 @@ command line.
 The rest of the code lives in subfolders:
 
 - `slctools/` - the shared library: `nand.py` (NAND pages and spare area,
-  ECC, AES/HMAC, SFFS superblock/FST/FAT parsing) and `boot1.py` (boot1
-  slots and ancast validation).
+  ECC, AES/HMAC, SFFS superblock/FST/FAT parsing), `boot1.py` (boot1 slots
+  and ancast validation) and `rights.py` (tickets and `cert.sys`).
 - `research/` - `extract_perms.py`, which lists the FST metadata of a dump,
   and its output `slc_permissions_list.txt`, which the permission rules of
   `build_slc.py` are based on.
@@ -166,10 +166,13 @@ same file as `extract_slc.py boot1` (default `rebuild/boot1.bin`).
 
 ### setup_osv10_jnus.sh / setup_osv10_cdecrypt.sh
 
-Put OSv10 (00050010-1000400a) into `rebuild/slc`: its code at
-`sys/title/00050010/1000400a/code/` and its ticket at
-`sys/rights/ticket/sys/0002/00000000.tik`. Only that title and ticket are
-replaced; the rest of `rebuild/slc` is left alone.
+Put OSv10 (00050010-1000400a) into `rebuild/slc`:
+- its code at `sys/title/00050010/1000400a/code/`;
+- its ticket at `sys/rights/ticket/sys/0002/00000000.tik`;
+- the certificate store `sys/rights/sys/cert.sys`;
+- `sys/rights/sys/title.list`, the list of titles with a ticket.
+
+Only these are replaced; the rest of `rebuild/slc` is left alone.
 
 ```bash
 ./setup_osv10_jnus.sh [otp.bin]   # default input/otp.bin
@@ -192,12 +195,23 @@ replaced; the rest of `rebuild/slc` is left alone.
 **cdecrypt route** (`setup_osv10_cdecrypt.sh`):
 - Decrypts a title already downloaded with MLCRestorerDownloader, using
   cdecrypt (from `PATH`, or set `CDECRYPT_CMD`).
-- The ticket is copied from that download.
+- The ticket and TMD are taken from that download.
 - cdecrypt has the common key built in instead of reading the OTP.
 
-System titles have common tickets, so the same ticket works on every console.
-The ticket's path was confirmed on a real dump: the title ID is stored at
-offset `0x1DC` of each `.tik`.
+**Ticket and certificates** (both routes, `slctools/rights.py`):
+- System titles have common tickets, so the same ticket works on every
+  console.
+- NUS appends the certificate chain to what it serves: the TMD comes with
+  CP0000000b and CA00000003, the ticket with XS0000000c and CA00000003. The
+  console stores the TMD as downloaded, but tickets bare (0x350 bytes each),
+  so the certificates are split off the ticket.
+- `cert.sys` is put together from those certificates in the console's order
+  (XS0000000c, CA00000003, CP0000000b). This makes it byte-identical to a
+  real console's, without shipping any certificates.
+- `title.list` lists the title ID (u64) of every title with a ticket; on a
+  real console it matches the ticket store exactly. Here it's just OSv10.
+- The ticket's path was confirmed on a real dump: the title ID is stored at
+  offset `0x1DC` of each `.tik`.
 
 Only OSv10 is put into the SLC this way. The other SLC system titles are
 installed on the console afterwards with wafel_setup_mlc (see the

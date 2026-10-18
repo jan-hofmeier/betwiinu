@@ -16,6 +16,7 @@ if ! command -v $CDECRYPT_CMD &> /dev/null; then
 fi
 
 BASE_DIR="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLC_REBUILD="$BASE_DIR/rebuild/slc"
 CODE_DIR="$SLC_REBUILD/sys/title/00050010/1000400a/code"
 TICKET_DIR="$SLC_REBUILD/sys/rights/ticket/sys/0002"
@@ -29,9 +30,8 @@ fi
 
 # Replace only the OSv10 title and its ticket, keep the rest of the tree
 rm -rf "$SLC_REBUILD/sys/title/00050010/1000400a"
-rm -f "$TICKET_DIR/00000000.tik"
+rm -f "$TICKET_DIR/00000000.tik" "$SLC_REBUILD/sys/rights/sys/cert.sys" "$SLC_REBUILD/sys/rights/sys/title.list"
 mkdir -p "$CODE_DIR"
-mkdir -p "$TICKET_DIR"
 
 echo "Extracting encrypted OSv10 files using CDecrypt..."
 # Change into CODE_DIR because cdecrypt typically extracts to the current working directory
@@ -39,11 +39,6 @@ cd "$CODE_DIR"
 
 # Run CDecrypt using the downloaded TMD and Ticket
 $CDECRYPT_CMD "$MLC_DOWN_DIR/title.tmd" "$MLC_DOWN_DIR/title.tik"
-
-# Depending on the CDecrypt version, it might output a 'title.tmd' and 'title.fst' alongside the code files.
-# But it does not typically put the ticket in the correct rights/ticket folder natively.
-echo "Setting up ticket..."
-cp "$MLC_DOWN_DIR/title.tik" "$TICKET_DIR/00000000.tik"
 
 # Ensure title.tmd and title.fst are also in the code dir (CDecrypt usually handles this, 
 # but we can explicitly copy the TMD just in case)
@@ -53,5 +48,10 @@ fi
 
 # Return to base dir
 cd "$BASE_DIR"
+
+# The ticket is stored without its certificates; those go into cert.sys,
+# and the title into title.list
+echo "Setting up ticket and certificates..."
+PYTHONPATH="$SCRIPT_DIR" python3 -m slctools.rights "$MLC_DOWN_DIR/title.tmd" "$MLC_DOWN_DIR/title.tik" "$SLC_REBUILD"
 
 echo "Setup complete! OSv10 has been placed in rebuild/slc via CDecrypt."
