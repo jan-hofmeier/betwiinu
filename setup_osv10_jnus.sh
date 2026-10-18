@@ -17,6 +17,7 @@ echo "Starting OSv10 setup for SLC rebuild..."
 
 # Paths
 BASE_DIR="$(pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SLC_REBUILD="$BASE_DIR/rebuild/slc"
 DOWNLOADS="$BASE_DIR/downloads"
 JNUS_DIR="$DOWNLOADS/jnus"
@@ -48,7 +49,7 @@ TICKET_DIR="$SLC_REBUILD/sys/rights/ticket/sys/0002"
 
 # Replace only the OSv10 title and its ticket, keep the rest of the tree
 rm -rf "$SLC_REBUILD/sys/title/00050010/1000400a"
-rm -f "$TICKET_DIR/00000000.tik"
+rm -f "$TICKET_DIR/00000000.tik" "$SLC_REBUILD/sys/rights/sys/cert.sys" "$SLC_REBUILD/sys/rights/sys/title.list"
 rm -rf "$JNUS_DIR"
 mkdir -p "$CODE_DIR"
 mkdir -p "$TICKET_DIR"
@@ -79,8 +80,12 @@ echo "Moving decrypted code files..."
 cp -r 000500101000400A/code/* "$CODE_DIR/"
 
 echo "Fetching TMD and Ticket directly from NUS..."
-curl -s -o "$CODE_DIR/title.tmd" http://ccs.cdn.wup.shop.nintendo.net/ccs/download/000500101000400A/tmd
-curl -s -o "$TICKET_DIR/00000000.tik" http://ccs.cdn.wup.shop.nintendo.net/ccs/download/000500101000400A/cetk
+curl -sf -o "$CODE_DIR/title.tmd" http://ccs.cdn.wup.shop.nintendo.net/ccs/download/000500101000400A/tmd
+curl -sf -o "$JNUS_DIR/cetk" http://ccs.cdn.wup.shop.nintendo.net/ccs/download/000500101000400A/cetk
+
+# The ticket is stored without its certificates; those go into cert.sys,
+# and the title into title.list
+PYTHONPATH="$SCRIPT_DIR" python3 -m slctools.rights "$CODE_DIR/title.tmd" "$JNUS_DIR/cetk" "$SLC_REBUILD"
 
 echo "Extracting FST..."
 # Find the decrypted title key and FST ID from the JNUSTool log
