@@ -326,7 +326,6 @@ def main():
             clusterno = superblock_cluster + i
             buff_off = i * CLUSTER_SIZE
             output_nand.set_cluster(clusterno, superblock_buffer[buff_off:buff_off+CLUSTER_SIZE])
-            output_nand.update_cluster_ecc(clusterno)
             
         output_nand.set_cluster_hmac(superblock_cluster + 0xf, calc_hmac)
     
