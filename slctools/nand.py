@@ -60,6 +60,20 @@ def parity(c):
     "Compute the parity of the 8-bit integer c."
     return CountBits(c) % 2
 
+def file_cluster_hmac(hmac_key, uid, name, fst_index, x3, chain_index, plaintext):
+	"""HMAC of a file cluster. name is the 12-byte name field of the FST entry;
+	the HMAC covers the decrypted cluster, not the encrypted one."""
+	digest_maker = hmac.new(hmac_key, b'', hashlib.sha1)
+	digest_maker.update(pack(">I12sIII", uid, name, chain_index, fst_index, x3) + b"\x00"*0x24)
+	digest_maker.update(plaintext)
+	return digest_maker.digest()
+
+def superblock_hmac(hmac_key, cluster_no, superblock):
+	"""HMAC of a superblock written at cluster_no."""
+	digest_maker = hmac.new(hmac_key, b'', hashlib.sha1)
+	digest_maker.update(b"\x00"*18 + pack(">H", cluster_no) + b"\x00"*44)
+	digest_maker.update(superblock)
+	return digest_maker.digest()
 
 def all_zeros(data: bytes):
 	for b in data:
@@ -385,8 +399,8 @@ class SFFS_entry:
 			self.name = ""
 		self.mode, self.attr, self.sub, self.sib, \
 			self.size, self.uid, self.gid, self.x3 = unpack(">BBHHIIHI", buffer[12:])
-		self.hmac_buf1 = pack(">I12s", self.uid, buffer[0:12])
-		self.hmac_buf2 = pack(">II", i, self.x3) + b"\x00"*0x24
+		self.raw_name = bytes(buffer[0:12])
+		self.index = i
 		self.chain = None
 
 	def is_file(self):
@@ -412,14 +426,9 @@ class SFFS_entry:
 	def calc_hmac(self, nand, index, decrypted_cluster=None):
 		if self.name == "scfm.img":
 			return b"\x00" * 20
-		clusters = self.get_cluster_chain()
-		digest_maker = hmac.new(nand.hmac_key, b'', hashlib.sha1)
-		hmac_extra: bytes = self.hmac_buf1 + pack(">I", index) + self.hmac_buf2
-		digest_maker.update(hmac_extra)
 		if decrypted_cluster is None:
-			decrypted_cluster = nand.decrypt_cluster(clusters[index])
-		digest_maker.update(decrypted_cluster)
-		return digest_maker.digest()
+			decrypted_cluster = nand.decrypt_cluster(self.get_cluster_chain()[index])
+		return file_cluster_hmac(nand.hmac_key, self.uid, self.raw_name, self.index, self.x3, index, decrypted_cluster)
 
 	def __str__(self):
 		retval = SFFS_entry_mode(self.mode).__str__()
@@ -535,12 +544,7 @@ class SFFS:
 		self.data_buffer[0x4:0x8] = pack(">I", version)
 	
 	def calc_hmac(self, clusterno, hmac_key):
-		digest_maker = hmac.new(hmac_key, b'', hashlib.sha1)
-		hmac_extra = b"\x00"*18 + pack(">H", clusterno) + b"\x00"*44
-		digest_maker.update(hmac_extra)
-		digest_maker.update(self.data_buffer)
-		calc_hmac = digest_maker.digest()
-		return calc_hmac
+		return superblock_hmac(hmac_key, clusterno, self.data_buffer)
 		
 def read_file(filename):
 	myfile = open(filename, "rb")

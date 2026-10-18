@@ -3,8 +3,6 @@
 import os
 import sys
 import struct
-import hashlib
-import hmac
 import re
 import argparse
 from slctools.nand import *
@@ -321,20 +319,9 @@ def main():
                     cluster_hmac = b'\x00' * 20
                 else:
                     output_nand.encrypt_cluster(cluster, cluster_data)
-                    
                     name_padded = node.name.encode('utf-8').ljust(12, b'\x00')
-                    uid = node.uid
-                    x3 = 0
-                    
-                    hmac_buf1 = struct.pack(">I12s", node.uid, name_padded)
-                    hmac_buf2 = struct.pack(">II", node.index, x3) + b"\x00"*0x24
-                    hmac_extra = hmac_buf1 + struct.pack(">I", i) + hmac_buf2
-                    
-                    encrypted_cluster = encrypt_block(output_nand.aes_key, cluster_data)
-                    digest_maker = hmac.new(output_nand.hmac_key, b'', hashlib.sha1)
-                    digest_maker.update(hmac_extra)
-                    digest_maker.update(encrypted_cluster)
-                    cluster_hmac = digest_maker.digest()
+                    cluster_hmac = file_cluster_hmac(output_nand.hmac_key, node.uid, name_padded,
+                                                     node.index, 0, i, cluster_data)
                 
                 output_nand.set_cluster_hmac(cluster, cluster_hmac)
                 
@@ -355,11 +342,7 @@ def main():
             continue
         print(f"Writing superblock {version} to slot {slot} at cluster 0x{superblock_cluster:x}...")
         
-        digest_maker = hmac.new(output_nand.hmac_key, b'', hashlib.sha1)
-        hmac_extra = b"\x00"*18 + struct.pack(">H", superblock_cluster) + b"\x00"*44
-        digest_maker.update(hmac_extra)
-        digest_maker.update(superblock_buffer)
-        calc_hmac = digest_maker.digest()
+        calc_hmac = superblock_hmac(output_nand.hmac_key, superblock_cluster, superblock_buffer)
         
         for i in range(0x10):
             clusterno = superblock_cluster + i
