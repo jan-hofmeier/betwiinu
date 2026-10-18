@@ -7,8 +7,8 @@ import hashlib
 import hmac
 import re
 import argparse
-from nand import *
-from boot1 import parse_boot1, read_boot1, write_boot1, BOOT1_SLOT_BLOCKS, BOOT1_SLOT_CLUSTERS
+from slctools.nand import *
+from slctools.boot1 import parse_boot1, read_boot1, write_boot1, BOOT1_SLOT_BLOCKS, BOOT1_SLOT_CLUSTERS
 
 BOOT1_CLUSTERS = len(BOOT1_SLOT_BLOCKS) * BOOT1_SLOT_CLUSTERS
 SUPERBLOCK_START = TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER
@@ -94,11 +94,24 @@ def get_permissions(rel_path, is_dir):
     mode = 0x02 if is_dir else 0xc1
     return mode, 0x0, 0x0, 0x0
 
-def build_fst_tree(input_dir, fst, fat, scfm_path=None):
+def parse_permissions_file(filepath):
+    """Reads the permissions.txt written by extract_slc.py: {path: (mode, attr, uid, gid)}."""
+    permissions = {}
+    with open(filepath, "r") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line.strip() or line.startswith("#"):
+                continue
+            mode, attr, uid, gid, path = line.split(" ", 4)
+            permissions[path] = (int(mode, 16), int(attr, 16), int(uid, 16), int(gid, 16))
+    return permissions
+
+def build_fst_tree(input_dir, fst, fat, scfm_path=None, permissions=None):
+    permissions = permissions or {}
     def scan_dir(path, rel_path, name):
         node = FSTNode(name, os.path.isdir(path), path)
         
-        mode, attr, uid, gid = get_permissions(rel_path, node.is_dir)
+        mode, attr, uid, gid = permissions.get(rel_path) or get_permissions(rel_path, node.is_dir)
         node.mode = mode
         node.attr = attr
         node.uid = uid
@@ -126,7 +139,7 @@ def build_fst_tree(input_dir, fst, fat, scfm_path=None):
     
     if scfm_path:
         scfm_node = FSTNode("scfm.img", False, scfm_path)
-        mode, attr, uid, gid = get_permissions("/scfm.img", False)
+        mode, attr, uid, gid = permissions.get("/scfm.img") or get_permissions("/scfm.img", False)
         scfm_node.mode = mode
         scfm_node.attr = attr
         scfm_node.uid = uid
@@ -193,20 +206,44 @@ def parse_bad_blocks_file(filepath):
     return bad_blocks
 
 def main():
-    parser = argparse.ArgumentParser(description="Create a Wii U SLC image from a folder")
-    parser.add_argument("--input-dir", required=True, help="Input directory")
-    parser.add_argument("--output-image", required=True, help="Output SLC.RAW file")
-    parser.add_argument("--otp", required=True, help="OTP bin file containing keys")
+    parser = argparse.ArgumentParser(
+        description="Create a Wii U SLC image from a folder",
+        epilog="Without explicit paths everything is taken from the rebuild directory: "
+               "<dir>/slc/ (files), <dir>/boot1.bin, <dir>/bad_blocks.txt and <dir>/permissions.txt "
+               "(the last three if they exist), and the image is written to <dir>/SLC.RAW.")
+    parser.add_argument("--rebuild-dir", "-d", default="rebuild", help="Rebuild directory with the defaults below (default: rebuild)")
+    parser.add_argument("--input-dir", help="Directory with the SLC files (default: <dir>/slc)")
+    parser.add_argument("--output-image", help="Output SLC.RAW file (default: <dir>/SLC.RAW)")
+    parser.add_argument("--otp", default="input/otp.bin", help="OTP of the target console (default: input/otp.bin)")
     parser.add_argument("--boot-image", required=False, help="SLC image to copy boot1 from")
-    parser.add_argument("--boot1", required=False, help="boot1.bin to write into both boot1 slots")
+    parser.add_argument("--boot1", required=False, help="boot1.bin to write into both boot1 slots (default: <dir>/boot1.bin)")
     parser.add_argument("--scfm", required=False, help="Extracted scfm.img file to include (overrides input directory)")
-    parser.add_argument("--bad-blocks", required=False, help="Bad blocks list file (minute format) to mark in NAND & skip in FAT")
+    parser.add_argument("--bad-blocks", required=False, help="Bad blocks list file (minute format) to mark in NAND & skip in FAT (default: <dir>/bad_blocks.txt)")
+    parser.add_argument("--permissions", required=False, help="FST metadata from extract_slc.py; paths not listed use the built-in rules (default: <dir>/permissions.txt)")
     
     args = parser.parse_args()
     
-    for slc_path in ("sys/config/system.xml", "sys/config/sys_prod.xml"):
-        if not os.path.exists(os.path.join(args.input_dir, slc_path)):
-            print(f"Warning: /{slc_path} missing from input dir; generate it with sys_config.py")
+    def default_file(name):
+        path = os.path.join(args.rebuild_dir, name)
+        return path if os.path.exists(path) else None
+    args.input_dir = args.input_dir or os.path.join(args.rebuild_dir, "slc")
+    args.output_image = args.output_image or os.path.join(args.rebuild_dir, "SLC.RAW")
+    if not args.boot1 and not args.boot_image:
+        args.boot1 = default_file("boot1.bin")
+    args.bad_blocks = args.bad_blocks or default_file("bad_blocks.txt")
+    args.permissions = args.permissions or default_file("permissions.txt")
+    
+    if not os.path.isdir(args.input_dir):
+        sys.exit(f"Error: input directory {args.input_dir} not found")
+    if not os.path.exists(args.otp):
+        sys.exit(f"Error: {args.otp} not found (the target console's OTP)")
+    if not args.bad_blocks:
+        print("Warning: no bad block list given, the image won't mark any block bad. "
+              "Extract the list from a dump of the chip you're going to write (extract_slc.py bad_blocks).")
+    permissions = {}
+    if args.permissions:
+        print(f"Using FST metadata from {args.permissions}")
+        permissions = parse_permissions_file(args.permissions)
     
     boot1_image = None
     try:
@@ -232,6 +269,8 @@ def main():
         otp_hmac = f.read(0x14)
         
     print("Creating empty output image...")
+    if os.path.dirname(args.output_image):
+        os.makedirs(os.path.dirname(args.output_image), exist_ok=True)
     with open(args.output_image, "wb") as f:
         for cluster in range(0, TOTAL_CLUSTER):
             f.write(b"\xff" * 0x4200)
@@ -246,7 +285,7 @@ def main():
         except ValueError as e:
             sys.exit(f"Error: {e}")
     else:
-        print("No boot image or boot1 provided, leaving boot1 slots empty.")
+        print("Warning: no boot1 given, leaving the boot1 slots empty - the console won't boot from this SLC!")
         
     fat = bytearray(struct.pack(">H", FAT_CLUSTER_EMPTY) * TOTAL_CLUSTER)
     fst = bytearray(b"\x00" * (6143 * 32))
@@ -262,7 +301,7 @@ def main():
             set_fat_entries(fat, range(b * CLUSTERS_PER_BLOCK, (b + 1) * CLUSTERS_PER_BLOCK), FAT_CLUSTER_BAD)
 
     print("Building FST and FAT...")
-    flat_nodes = build_fst_tree(args.input_dir, fst, fat, args.scfm)
+    flat_nodes = build_fst_tree(args.input_dir, fst, fat, args.scfm, permissions)
     print(f"Total files/dirs: {len(flat_nodes)}")
     
     print("Encrypting files...")
@@ -329,7 +368,7 @@ def main():
             
         output_nand.set_cluster_hmac(superblock_cluster + 0xf, calc_hmac)
     
-    print("Done!")
+    print(f"Done! Wrote {args.output_image}")
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,13 @@
 #!/bin/bash
 set -e
 
-OTP="$(realpath "${1:?usage: $0 <otp.bin>}")"
+# usage: ./setup_osv10_jnus.sh [otp.bin]   (default: input/otp.bin)
+OTP="${1:-input/otp.bin}"
+if [ ! -f "$OTP" ]; then
+    echo "Error: $OTP not found (pass the path to an otp.bin)"
+    exit 1
+fi
+OTP="$(realpath "$OTP")"
 if [ "$(stat -c%s "$OTP")" -ne 1024 ]; then
     echo "Error: $OTP is not a 1024-byte otp.bin"
     exit 1
@@ -11,12 +17,13 @@ echo "Starting OSv10 setup for SLC rebuild..."
 
 # Paths
 BASE_DIR="$(pwd)"
-SLC_REBUILD="$BASE_DIR/slc_rebuild"
-JNUS_DIR="$BASE_DIR/jnus_test_build"
+SLC_REBUILD="$BASE_DIR/rebuild/slc"
+DOWNLOADS="$BASE_DIR/downloads"
+JNUS_DIR="$DOWNLOADS/jnus"
 JNUS_RELEASE_URL="https://github.com/Maschell/JNUSTool/releases/download/0.3b/release.zip"
 JNUS_RELEASE_SHA256="95ef9f2c9b421cc05b9d6e4c5c0c39161005920617a6b19137e4e211130e572b"
 
-if [ -z "$JNUS_JAR" ] && [ ! -f JNUSTool.jar ]; then
+if [ -z "$JNUS_JAR" ] && [ ! -f "$DOWNLOADS/JNUSTool.jar" ]; then
     echo "JNUSTool.jar not found, downloading JNUSTool 0.3b from GitHub..."
     JNUS_ZIP="$(mktemp)"
     curl -sfL -o "$JNUS_ZIP" "$JNUS_RELEASE_URL"
@@ -25,10 +32,11 @@ if [ -z "$JNUS_JAR" ] && [ ! -f JNUSTool.jar ]; then
         echo "Error: downloaded JNUSTool release doesn't match the expected SHA-256"
         exit 1
     fi
-    python3 -I -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract('JNUSTool.jar', sys.argv[2])" "$JNUS_ZIP" .
+    mkdir -p "$DOWNLOADS"
+    python3 -I -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract('JNUSTool.jar', sys.argv[2])" "$JNUS_ZIP" "$DOWNLOADS"
     rm -f "$JNUS_ZIP"
 fi
-JNUS_JAR="$(realpath "${JNUS_JAR:-JNUSTool.jar}")"
+JNUS_JAR="$(realpath "${JNUS_JAR:-$DOWNLOADS/JNUSTool.jar}")"
 if [ ! -f "$JNUS_JAR" ]; then
     echo "Error: $JNUS_JAR not found"
     exit 1
@@ -38,8 +46,9 @@ fi
 CODE_DIR="$SLC_REBUILD/sys/title/00050010/1000400a/code"
 TICKET_DIR="$SLC_REBUILD/sys/rights/ticket/sys/0002"
 
-# Clean previous build
-rm -rf "$SLC_REBUILD"
+# Replace only the OSv10 title and its ticket, keep the rest of the tree
+rm -rf "$SLC_REBUILD/sys/title/00050010/1000400a"
+rm -f "$TICKET_DIR/00000000.tik"
 rm -rf "$JNUS_DIR"
 mkdir -p "$CODE_DIR"
 mkdir -p "$TICKET_DIR"
@@ -91,4 +100,4 @@ IV="${FST_ID}000000000000000000000000"
 
 openssl enc -d -nopad -aes-128-cbc -K "$TITLE_KEY" -iv "$IV" -in "${FST_ID}.app" -out "$CODE_DIR/title.fst"
 
-echo "Setup complete! The slc_rebuild directory has been created."
+echo "Setup complete! OSv10 has been placed in rebuild/slc."

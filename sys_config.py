@@ -8,6 +8,9 @@ whose last digit is a check digit.
 
 Both templates reproduce byte-for-byte the files found in real dumps
 (firmware 5.5.x, sys_prod version 5 / system version 21).
+
+A rebuilt SLC doesn't need them: the system regenerates both files when they
+are missing.
 """
 
 import argparse
@@ -142,7 +145,7 @@ def main():
     parser = argparse.ArgumentParser(description="Generate system.xml and sys_prod.xml for a Wii U SLC")
     parser.add_argument("--serial", required=True, help="Serial from the target console's sticker, e.g. FEM123456784")
     parser.add_argument("--region", choices=sorted(REGIONS), help="Region (default: derived from the serial prefix)")
-    parser.add_argument("-o", "--output-dir", required=True, help="SLC root directory to write sys/config/*.xml into")
+    parser.add_argument("-o", "--output-dir", default="rebuild/slc", help="SLC root directory to write sys/config/*.xml into (default: rebuild/slc)")
     args = parser.parse_args()
 
     try:

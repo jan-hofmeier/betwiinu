@@ -1,10 +1,10 @@
 # Betwiin v1.0, Copyright 2009 Haxx Enterprises (bushing@gmail.com)
 # Licensed to you under the terms of the GNU GPL v2.0; see http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 
-import os, sys, struct, hashlib, hmac, numpy
+import os, sys, struct, hashlib, hmac
 from struct import unpack, pack
 from Crypto.Cipher import AES
-from nand import *
+from slctools.nand import *
 
 cluster_contents = {}
 

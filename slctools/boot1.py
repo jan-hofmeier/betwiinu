@@ -12,7 +12,7 @@ version; the body starts at 0x200.
 
 import hashlib
 import struct
-from nand import CLUSTER_SIZE
+from .nand import CLUSTER_SIZE
 
 BOOT1_SLOT_SIZE = 0x20000  # one NAND block
 BOOT1_SLOT_CLUSTERS = BOOT1_SLOT_SIZE // CLUSTER_SIZE

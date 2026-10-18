@@ -16,7 +16,7 @@ if ! command -v $CDECRYPT_CMD &> /dev/null; then
 fi
 
 BASE_DIR="$(pwd)"
-SLC_REBUILD="$BASE_DIR/slc_rebuild"
+SLC_REBUILD="$BASE_DIR/rebuild/slc"
 CODE_DIR="$SLC_REBUILD/sys/title/00050010/1000400a/code"
 TICKET_DIR="$SLC_REBUILD/sys/rights/ticket/sys/0002"
 
@@ -27,7 +27,9 @@ if [ ! -d "$MLC_DOWN_DIR" ] || [ ! -f "$MLC_DOWN_DIR/title.tmd" ]; then
     exit 1
 fi
 
-# Create target directories
+# Replace only the OSv10 title and its ticket, keep the rest of the tree
+rm -rf "$SLC_REBUILD/sys/title/00050010/1000400a"
+rm -f "$TICKET_DIR/00000000.tik"
 mkdir -p "$CODE_DIR"
 mkdir -p "$TICKET_DIR"
 
@@ -52,4 +54,4 @@ fi
 # Return to base dir
 cd "$BASE_DIR"
 
-echo "Setup complete! The slc_rebuild directory has been constructed via CDecrypt."
+echo "Setup complete! OSv10 has been placed in rebuild/slc via CDecrypt."

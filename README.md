@@ -1,226 +1,239 @@
 # betwiinu
 
-Fork of `betwiin` for the Wii U SLC (system NAND). Original Wii `betwiin` is here:
-http://wiibrew.org/wiki/Betwiin
+Fork of [betwiin](http://wiibrew.org/wiki/Betwiin) for the Wii U SLC (system
+NAND): extract an SLC dump, build a new SLC image from a folder, fetch the
+generic parts (boot1, OSv10) from Nintendo's update server, and recrypt a
+dump for another console.
 
-`nand.py` is the shared library: NAND spare/ECC handling, AES encrypt/decrypt,
-HMAC, and SFFS (superblock/FST/FAT) parsing. Everything else below is built on
-top of it.
+## Guides
 
-There are two different things you might want to do with an SLC, covered
-below:
+- [Create a new SLC from scratch](docs/create_slc.md) - boot1 + OSv10 for a
+  console whose SLC is lost or replaced; the other system titles are installed
+  afterwards with wafel_setup_mlc.
+- [Modify an existing SLC](docs/modify_slc.md) - extract a dump, change files,
+  repack it for the same console.
 
-1. **Recrypt an existing SLC dump for a different console** - the original
-   `betwiin` use case. You already have a complete, working SLC and just need its content
-   re-keyed to boot on another console. (This still needs manual fixing of the serial and so on)
-2. **Rebuild an SLC from scratch** - assemble a new SLC image from
-   individual pieces (some fetched fresh from Nintendo, some pulled from a
-   donor dump) rather than re-keying one complete existing dump.
+This README describes what each tool does.
 
-## 1. Recrypting an existing SLC to a different console
+## Requirements
 
-This is the original purpose of the tool: take a complete SLC dump from one
-console and re-encrypt/re-HMAC its *entire* contents (files,
-superblocks) under a different console's keys, so the same data can be
-written back and booted on that other console. Content and metadata are
-preserved byte-for-byte; only the per-console AES/HMAC keys change.
+- Python 3.10 or newer with [pycryptodome](https://www.pycryptodome.org)
+  (`pip3 install -r requirements.txt`)
+- For `setup_osv10_jnus.sh`: Java, `curl` and `openssl`
+- For `setup_osv10_cdecrypt.sh`: [cdecrypt](https://github.com/VitaSmith/cdecrypt)
 
-`betwiin.py` uses fixed paths rather than CLI args:
+## Layout
+
+The scripts in the root are the ones you run, always from the repository
+root. They share these working folders (all ignored by git):
+
+```
+input/SLC.RAW            your SLC dump (minute: Dump SLC.RAW)
+input/otp.bin            the console's OTP
+rebuild/slc/             the files that go into the SLC
+rebuild/boot1.bin        boot1 image
+rebuild/bad_blocks.txt   bad block list of the chip that will be written
+rebuild/permissions.txt  FST metadata from an extracted dump
+rebuild/SLC.RAW          the built image
+downloads/               JNUSTool and its downloads
+output/                  betwiin.py's output
+```
+
+Every tool defaults to these paths; all of them can be overridden on the
+command line.
+
+The rest of the code lives in subfolders:
+
+- `slctools/` - the shared library: `nand.py` (NAND pages and spare area,
+  ECC, AES/HMAC, SFFS superblock/FST/FAT parsing) and `boot1.py` (boot1
+  slots and ancast validation).
+- `research/` - `extract_perms.py`, which lists the FST metadata of a dump,
+  and its output `slc_permissions_list.txt`, which the permission rules of
+  `build_slc.py` are based on.
+- `docs/` - the guides.
+
+## Tools
+
+### create_slc.sh
+
+Runs the whole [from-scratch guide](docs/create_slc.md) in one go:
+1. checks the prerequisites;
+2. extracts the bad blocks and boot1 from `input/SLC.RAW`, downloading boot1
+   from NUS if the dump has no valid one;
+3. downloads OSv10 with JNUSTool;
+4. builds `rebuild/SLC.RAW`.
+
+It refuses to run if `rebuild/` already exists, so leftovers from an earlier
+run never end up in the image.
+
+### extract_slc.py
+
+Extracts files and folders, boot1 and the bad block list from an SLC dump
+(default `input/SLC.RAW`) into the rebuild folder (default `rebuild/`, set
+with `-o`).
+
+```bash
+python3 extract_slc.py --all                 # everything
+python3 extract_slc.py boot1 bad_blocks      # no otp.bin needed
+python3 extract_slc.py /sys/config /scfm.img # specific paths
+python3 extract_slc.py --image SLC.RAW --otp otp.bin --boot1 boot1.bin --bad-blocks bad_blocks.txt
+```
+
+- **Files** go to `rebuild/slc/`. They are encrypted, so this needs the OTP of
+  the console the dump came from (`--otp`, default `input/otp.bin` if it
+  exists). `scfm.img` is stored unencrypted and is extracted as-is.
+- **FST metadata:** a complete extraction also writes
+  `rebuild/permissions.txt` with the mode, attributes, uid and gid of every
+  entry, so `build_slc.py` can repack the tree with exactly the metadata it
+  had.
+- **boot1** (`rebuild/boot1.bin`): both slots (blocks 0 and 1) are checked,
+  with a warning if one is invalid or they differ. Only the boot1 image itself
+  is written (header + body, e.g. 0xE200 bytes), not the whole slot.
+- **Bad blocks** (`rebuild/bad_blocks.txt`) are collected from two places:
+  - the NAND spare area: the factory markers;
+  - clusters marked bad (`0xFFFD`) in the FAT of the newest superblock, e.g.
+    found bad by IOSU later.
+
+  Each line notes where the block was found (`# spare` / `# FAT`).
+
+  isfshax's superblock slots are left out. isfshax marks them bad in the FAT
+  only to keep IOSU away, so they aren't really bad, unless isfshax itself
+  flagged one as bad.
+
+  boot1 and the bad blocks aren't encrypted and need no `otp.bin`.
+
+This also works on a chip that has never been in a Wii U (no SFFS on it);
+then only the spare markers are read. Those are the factory markers, so this
+only works on a fresh chip or one from a Wii U: erasing a chip, or using it
+in another device, can destroy them.
+
+### build_slc.py
+
+Builds a new SLC image from the rebuild folder (`-d`, default `rebuild/`):
+`rebuild/slc/` plus `boot1.bin`, `bad_blocks.txt` and `permissions.txt` if
+they exist, written to `rebuild/SLC.RAW`.
+
+```bash
+python3 build_slc.py
+python3 build_slc.py --input-dir dir --output-image SLC.RAW --otp otp.bin \
+  --boot1 boot1.bin --bad-blocks bad_blocks.txt
+```
+
+- **Building:** it allocates FAT clusters, builds the FST, encrypts and HMACs
+  every cluster, and writes all 64 superblock slots.
+  - The FAT uses the same markers as IOSU: `0xFFFE` free, `0xFFFB` end of
+    chain, `0xFFFC` reserved (both boot1 slots and the superblock area),
+    `0xFFFD` bad.
+  - `scfm.img` is written unencrypted and without HMAC, like on a real
+    console.
+- **`--otp`:** the target console's OTP (default `input/otp.bin`).
+- **Permissions:** the mode, attributes, uid and gid of each entry come from
+  `permissions.txt` (`--permissions`). Entries that aren't listed there use
+  built-in rules worked out from real dumps (see
+  `research/slc_permissions_list.txt`).
+- **`--boot1`:** validated (ancast magic + SHA-1 of the body) and written to
+  both boot1 slots, block 0 (primary) and block 1 (backup). A slot on a bad
+  block is skipped. `--boot-image` takes boot1 from another full SLC dump
+  instead. The SEEPROM's boot1 version entries aren't touched; minute syncs
+  them when flashing.
+- **`--scfm`:** includes an `scfm.img` from somewhere else. One in
+  `rebuild/slc/` is included anyway.
+- **`--bad-blocks`:** marks the listed blocks bad in two places:
+  - the NAND spare area: pages 0 and 1 are zeroed, like a factory marker;
+  - the FAT: `0xFFFD`.
+
+  Superblock and boot1 slots on bad blocks are skipped.
+
+  Both places matter. minute's restore erases and programs every block, bad
+  ones included: the erase can wipe the chip's factory marker, and only the
+  marker in the image puts it back, which may not fully work on a bad block.
+  IOSU itself goes by the FAT, so that entry is the reliable one.
+
+  Bad blocks are a defect map of the *physical chip*, so the list has to come
+  from a dump of the chip that is going to be written. Never reuse someone
+  else's list.
+
+### download_boot1.py
+
+Downloads boot1 (title 00050010-10000100, content 00000009) from NUS and
+decrypts it with the common key from `input/otp.bin`. The development magic
+is patched to the retail one (`--no-patch` keeps it). The image is validated
+like an extracted one and the content padding is stripped, so it gives the
+same file as `extract_slc.py boot1` (default `rebuild/boot1.bin`).
+
+### setup_osv10_jnus.sh / setup_osv10_cdecrypt.sh
+
+Put OSv10 (00050010-1000400a) into `rebuild/slc`: its code at
+`sys/title/00050010/1000400a/code/` and its ticket at
+`sys/rights/ticket/sys/0002/00000000.tik`. Only that title and ticket are
+replaced; the rest of `rebuild/slc` is left alone.
+
+```bash
+./setup_osv10_jnus.sh [otp.bin]   # default input/otp.bin
+./setup_osv10_cdecrypt.sh <MLCRestorerDownloader output dir of 000500101000400a>
+```
+
+**JNUS route** (`setup_osv10_jnus.sh`):
+- Downloads the title with JNUSTool. Its config is generated with the common
+  key from the OTP, and removed again afterwards.
+- If there's no `downloads/JNUSTool.jar` (and `JNUS_JAR` doesn't point to
+  one), it downloads the JNUSTool 0.3b release from GitHub, checks it against
+  a pinned SHA-256 and extracts the jar.
+- JNUSTool isn't fully automatic: it opens a window with the title's file
+  tree. Tick **root** (the top entry, so everything is selected), press
+  **Download**, then close the window when the download has finished. The
+  script continues after that.
+- The TMD and ticket are fetched straight from NUS with `curl`, and the FST
+  is decrypted with `openssl`.
+
+**cdecrypt route** (`setup_osv10_cdecrypt.sh`):
+- Decrypts a title already downloaded with MLCRestorerDownloader, using
+  cdecrypt (from `PATH`, or set `CDECRYPT_CMD`).
+- The ticket is copied from that download.
+- cdecrypt has the common key built in instead of reading the OTP.
+
+System titles have common tickets, so the same ticket works on every console.
+The ticket's path was confirmed on a real dump: the title ID is stored at
+offset `0x1DC` of each `.tik`.
+
+Only OSv10 is put into the SLC this way. The other SLC system titles are
+installed on the console afterwards with wafel_setup_mlc (see the
+[guide](docs/create_slc.md)).
+
+### sys_config.py
+
+Generates `/sys/config/system.xml` and `/sys/config/sys_prod.xml` from the
+serial on the target console's sticker. You don't normally need them: the
+system regenerates both files when they are missing.
+
+```bash
+python3 sys_config.py --serial FEM123456784   # writes into rebuild/slc
+```
+
+- **Serial validation:** a letter prefix (`code_id`) followed by 9 digits, the
+  last of which is a check digit
+  (`(10 - (d1+d3+d5+d7 + 3*(d2+d4+d6+d8))) % 10`, the same scheme as the Wii).
+- **Region:** the prefix selects it (`FEM` = EUR, `FW` = USA); for other
+  prefixes pass `--region`.
+- **Supported regions:** only EUR and USA, since their values were taken from
+  real dumps. The generated EUR files are byte-identical to a real
+  console's.
+
+### betwiin.py
+
+The original betwiin use case: re-encrypt a complete SLC dump for a different
+console. Every file is decrypted with the source console's keys and
+re-encrypted and re-HMAC'd with the target's. boot1 is copied as-is, and new
+superblocks are written. `scfm.img` isn't copied.
 
 ```
 input/SLC.RAW    source SLC dump
-input/otp.bin    source console's OTP (keys the dump was encrypted with)
-output/otp.bin   target console's OTP (keys to re-encrypt for)
+input/otp.bin    source console's OTP
+output/otp.bin   target console's OTP
 ```
 
-```bash
-mkdir -p input output
-cp /path/to/source_SLC.RAW input/SLC.RAW
-cp /path/to/source_otp.bin input/otp.bin
-cp /path/to/target_otp.bin output/otp.bin
-python3 betwiin.py
-```
-
-This writes `output/SLC.RAW`: boot1/boot2 copied as-is, every SFFS file
-decrypted with the source keys and re-encrypted/re-HMAC'd with the target
-keys, and a fresh superblock written with a bumped version. `scfm.img` is
-skipped (it's never encrypted/HMAC'd on the NAND to begin with).
-
-## 2. Rebuilding an SLC from scratch
-
-This path assembles a directory tree from several sources — some
-console-specific (must come from a donor dump of the target console, or the
-target console itself), some generic (fetched fresh from Nintendo) — and
-then builds a brand-new image from it. The three steps below are typically
-used in this order: extract whatever you need from a donor dump, fetch the
-generic pieces, then build.
-
-### 2.1 Extracting from an existing SLC dump
-
-`extract_slc.py` pulls files/folders, `boot1.bin`, or the bad-block list out
-of a real SLC dump.
-
-```bash
-# Extract everything (all SFFS files, boot1, bad blocks)
-python3 extract_slc.py --image SLC.RAW --otp otp.bin --all -o ./extracted
-
-# Extract just specific paths
-python3 extract_slc.py --image SLC.RAW --otp otp.bin -e /sys/config -o ./extracted
-python3 extract_slc.py --image SLC.RAW --otp otp.bin /sys/config /scfm.img boot1
-
-# Legacy / raw component extraction
-python3 extract_slc.py --image SLC.RAW --otp otp.bin --boot1 boot1.bin --scfm scfm.img --bad-blocks bad_blocks.txt
-```
-
-`--otp` is only required when extracting actual SFFS file/folder content
-(it's encrypted). Extracting just `--boot1` or `--bad-blocks` reads
-unencrypted NAND data directly and needs no key material at all, which
-matters if you have an SLC dump but not the matching `otp.bin`:
-
-```bash
-python3 extract_slc.py --image SLC.RAW --bad-blocks bad_blocks.txt
-python3 extract_slc.py --image SLC.RAW --boot1 boot1.bin
-```
-
-`--bad-blocks` collects blocks marked bad in the NAND spare area (factory)
-and blocks with clusters marked bad (`0xFFFD`) in the FAT of the newest
-superblock (e.g. found bad by IOSU later). If isfshax is installed, its
-superblock slots are left out: isfshax marks them bad in the FAT only to keep
-IOSU away, so they aren't really bad - unless isfshax itself flagged one as
-bad. Each line notes where the block was found (`# spare` / `# FAT`).
-
-This also works on a chip that has never been in a Wii U (no SFFS on it):
-then only the spare markers are read. Those are the factory markers, so this
-only works on a fresh chip (or one from a Wii U) - erasing a chip, or using
-it in another device, can destroy them.
-
-`--boot1` checks both boot1 slots (blocks 0 and 1), warns if one is invalid
-or they differ, and writes just the boot1 image (header + body, e.g. 0xE200
-bytes), not the whole slot. `extract_boot1_nus.py` validates the download the
-same way and strips the content padding, so both produce the same file.
-
-### 2.2 Fetching generic components from Nintendo's servers
-
-Some of what belongs in the SLC isn't console-specific and doesn't require a
-donor dump — it can be pulled straight from the NUS (Nintendo Update Server)
-CDN, decrypted with just the common key out of your `otp.bin`:
-
-```bash
-# boot1 (title 00050010-10000100), downloaded + decrypted directly over HTTP,
-# no JNUS/cdecrypt dependency
-python3 extract_boot1_nus.py --otp otp.bin -o boot1.bin
-
-# OSv10 system title (00050010-1000400a): code files + ticket
-./setup_osv10_jnus.sh otp.bin   # via JNUSTool (needs java); its config is generated
-                                # with the common key from otp.bin
-# or, if you already have an encrypted dump via MLCRestorerDownloader:
-./setup_osv10_cdecrypt.sh <dir>  # via cdecrypt (from PATH or CDECRYPT_CMD=...) on the
-                                 # MLCRestorerDownloader output dir of 000500101000400a
-                                 # (note: cdecrypt has the common key built in instead of
-                                 # reading otp.bin)
-```
-
-JNUSTool isn't fully automatic: it opens a window with the title's file
-tree. Tick **root** (the top entry, so everything is selected) and press
-**Download**, then close the window when the download has finished - the
-script continues after that.
-
-If there's no `JNUSTool.jar` in the working directory (and `JNUS_JAR` isn't
-set to one), `setup_osv10_jnus.sh` downloads the JNUSTool 0.3b release from
-GitHub (Maschell/JNUSTool), checks it against a pinned SHA-256 and extracts
-the jar.
-
-Both setup scripts lay the title's code out at
-`slc_rebuild/sys/title/00050010/1000400a/code/` and its ticket at
-`slc_rebuild/sys/rights/ticket/sys/0002/00000000.tik`, ready to hand to
-`build_slc.py --input-dir slc_rebuild` (next section).
-
-The ticket itself is fetched the same direct-HTTP way as boot1 (both scripts
-just `curl`/`GET` `.../ccs/download/<titleid>/cetk` — no JNUS needed for the
-ticket, since system-title tickets are "common tickets" signed once by
-Nintendo and decryptable by any console's common key). The destination path
-(`sys/rights/ticket/sys/0002/00000000.tik`) was confirmed by extracting
-`/sys/rights/ticket` from a real dump and reading the title-ID field embedded
-at offset `0x1DC` of each `.tik` file — it isn't a known hash formula, so
-it's only verified correct for consoles whose ticket cache already contains
-that title at that slot, not guaranteed for a from-scratch/empty ticket
-cache.
-
-`/sys/config/system.xml` and `/sys/config/sys_prod.xml` are generated by
-`sys_config.py` from the serial on the target console's sticker (e.g.
-`FEM123456784`), written straight into the rebuild tree:
-
-```bash
-python3 sys_config.py --serial FEM123456784 -o slc_rebuild
-```
-
-The serial is validated: a letter prefix (`code_id`) followed by 9 digits,
-the last of which is a check digit (`(10 - (d1+d3+d5+d7 + 3*(d2+d4+d6+d8))) % 10`,
-the same scheme as the Wii). The prefix selects the region (`FEM` = EUR,
-`FW` = USA); for other prefixes pass `--region`. Only EUR and USA are
-supported for now, since their per-region values (product area, PAL/NTSC,
-5 GHz country code, model number, Wii U Menu title ID) were taken from real
-dumps; the generated EUR files are byte-identical to the test dump's.
-
-Everything else under `/sys/config`, `/sys/prefs`, other ticket entries,
-etc. currently has to come from an existing dump — there's no generator for
-it yet. Whether the system actually recreates some of that on first boot is
-still untested.
-
-### 2.3 Building a fresh SLC image from a directory
-
-`build_slc.py` creates a brand-new `SLC.RAW` from a plain directory tree
-(e.g. `slc_rebuild/` assembled above): it allocates FAT clusters, builds the
-FST with the correct per-path mode/attr/uid/gid (see
-`slc_permissions_list.txt` for the reverse-engineered rules), encrypts and
-HMACs every cluster, and writes all 64 redundant superblocks. The FAT uses
-the same markers as IOSU: `0xFFFE` free, `0xFFFB` end of chain, `0xFFFC`
-reserved (both boot1 slots and the superblock area), `0xFFFD` bad.
-
-```bash
-python3 build_slc.py \
-  --input-dir  slc_rebuild \
-  --output-image SLC.RAW \
-  --otp otp.bin \
-  --boot1 boot1.bin \
-  --bad-blocks bad_blocks.txt
-```
-
-- `--otp` — the target console's OTP (console-unique, must come from real
-  hardware; can't be synthesized).
-- `--boot1` — the boot1 image (from §2.1 or §2.2). It's validated (ancast
-  magic + SHA-1 of the body) and written to both boot1 slots: block 0
-  (primary) and block 1 (backup); both are reserved in the FAT. A slot on a
-  bad block is skipped (the other one is still written).
-  `--boot-image` takes boot1 from another full SLC dump instead (the first
-  valid slot). The SEEPROM's boot1 version entries aren't touched here;
-  minute syncs them with the NAND when flashing.
-- `--scfm` — optional; include an `scfm.img`. Not needed if you're setting up
-  a fresh MLC (scfm.img relates to the SD/MLC storage mapping, not SLC system
-  config, and gets regenerated for whatever MLC is actually attached). Leave
-  it off and no `scfm.img` entry is created at all.
-- `--bad-blocks` — optional; marks the given blocks bad in both places: the
-  NAND spare area (pages 0 and 1 zeroed, like a factory marker) and the FAT
-  (`0xFFFD`). Superblock and boot1 slots on bad blocks are skipped.
-
-  Both matter because minute's restore erases and programs every block,
-  bad ones included: the erase can wipe the chip's factory marker, and only
-  the marker in the image puts it back - which may not fully work on a bad
-  block. IOSU itself goes by the FAT, so that entry is the reliable one.
-
-  Bad blocks are a defect map of the *physical NAND chip*, not of the
-  console or its data — so the list has to come from whichever chip is
-  actually going to be written, not from the console whose keys/content
-  you're using:
-  - Writing back to the same chip you dumped? Use the bad-block list
-    extracted from that dump (§2.1) — no `otp.bin` needed for this.
-  - Replacing the SLC chip with one pulled from a different console? Extract
-    the bad-block list from a raw dump of *that* chip instead (again, no
-    `otp.bin`/keys needed, just a raw read of the new chip).
-  - Writing to a chip that didn't come out of a Wii U at all (e.g. a fresh
-    generic NAND)? Dump it raw before writing anything and extract the list
-    from that dump - the factory markers are in the spare area. Never reuse
-    someone else's list.
+`python3 betwiin.py` writes `output/SLC.RAW`. Console-specific files such as
+`sys_prod.xml` still have to be fixed by hand.
 
 ## Credits
 
@@ -228,13 +241,19 @@ This project builds on the work of many people in the Wii and Wii U scene:
 
 - **bushing / Haxx Enterprises** - the original
   [betwiin](http://wiibrew.org/wiki/Betwiin) (2009) for the Wii NAND, which
-  `betwiin.py` and the NAND, ECC, AES/HMAC and SFFS code in `nand.py` are
-  based on.
+  `betwiin.py` and the NAND, ECC, AES/HMAC and SFFS code in
+  `slctools/nand.py` are based on.
 - **[minute_minute](https://github.com/StroopwafelCFW/minute_minute)** -
   based on [minute](https://github.com/dazjo/minute) by SALT / Dazzozo, with
-  work by shinyquagsire23 and other contributors. Its source was the
-  reference for the SEEPROM boot1 slot parameters, the ancast header, the
-  ISFS FAT values and how SLC restores handle bad blocks.
+  work by shinyquagsire23 and other contributors. Dumps and restores the SLC
+  and OTP. Its source was the reference for the SEEPROM boot1 slot parameters,
+  the ancast header, the ISFS FAT values and how SLC restores handle bad
+  blocks.
+- **[stroopwafel](https://github.com/shinyquagsire23/stroopwafel)** by
+  shinyquagsire23, and
+  **[wafel_setup_mlc](https://github.com/StroopwafelCFW/wafel_setup_mlc)**
+  (with IOSU patches by GaryOderNichts and Ash, and work by V10lator and
+  Lazr1026) - install the remaining system titles on a rebuilt console.
 - **[isfshax](https://github.com/isfshax/isfshax)** by rw-r-r-0644 (and the
   [isfshax installer](https://github.com/isfshax/isfshax_installer)) - the
   isfshax superblock and slot layout that `extract_slc.py` recognises when
@@ -244,11 +263,12 @@ This project builds on the work of many people in the Wii and Wii U scene:
 - **[cdecrypt](https://github.com/VitaSmith/cdecrypt)** by crediar, maintained
   by VitaSmith - used by `setup_osv10_cdecrypt.sh`.
 - **[MLCRestorerDownloader](https://github.com/Xpl0itU/MLCRestorerDownloader)**
-  by Xpl0itU - provides the encrypted title files for the cdecrypt route.
+  by Xpl0itU - downloads the system titles, for the cdecrypt route and for
+  wafel_setup_mlc.
 - **[WiiBrew](https://wiibrew.org) and [WiiUBrew](https://wiiubrew.org)** -
   the community documentation of the NAND, title and ticket formats.
 - **[pycryptodome](https://www.pycryptodome.org)** - AES for the Python tools.
 
-The FST permission rules (`slc_permissions_list.txt`), the `system.xml` /
-`sys_prod.xml` templates, the serial check digit and the bad-block marker
-layout were worked out by comparing real SLC dumps.
+The FST permission rules (`research/slc_permissions_list.txt`), the
+`system.xml` / `sys_prod.xml` templates, the serial check digit and the
+bad-block marker layout were worked out by comparing real SLC dumps.
