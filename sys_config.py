@@ -9,8 +9,7 @@ whose last digit is a check digit.
 Both templates reproduce byte-for-byte the files found in real dumps
 (firmware 5.5.x, sys_prod version 5 / system version 21).
 
-A rebuilt SLC doesn't need them: the system regenerates both files when they
-are missing.
+A rebuilt SLC needs both: the console doesn't boot without them.
 """
 
 import argparse

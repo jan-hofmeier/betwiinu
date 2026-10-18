@@ -56,12 +56,20 @@ The rest of the code lives in subfolders:
 
 ### create_slc.sh
 
-Runs the whole [from-scratch guide](docs/create_slc.md) in one go:
-1. checks the prerequisites;
+Runs the whole [from-scratch guide](docs/create_slc.md) in one go. It takes
+the serial from the target console's sticker (and the region, if the serial
+prefix is unknown):
+
+```bash
+./create_slc.sh FEM123456784
+```
+
+1. checks the prerequisites and the serial;
 2. extracts the bad blocks and boot1 from `input/SLC.RAW`, downloading boot1
    from NUS if the dump has no valid one;
 3. downloads OSv10 with JNUSTool;
-4. builds `rebuild/SLC.RAW`.
+4. generates `system.xml` and `sys_prod.xml` with `sys_config.py`;
+5. builds `rebuild/SLC.RAW`.
 
 It refuses to run if `rebuild/` already exists, so leftovers from an earlier
 run never end up in the image.
@@ -220,8 +228,8 @@ installed on the console afterwards with wafel_setup_mlc (see the
 ### sys_config.py
 
 Generates `/sys/config/system.xml` and `/sys/config/sys_prod.xml` from the
-serial on the target console's sticker. You don't normally need them: the
-system regenerates both files when they are missing.
+serial on the target console's sticker. A rebuilt SLC needs both: the console
+doesn't boot without them.
 
 ```bash
 python3 sys_config.py --serial FEM123456784   # writes into rebuild/slc
