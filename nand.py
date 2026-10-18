@@ -7,7 +7,6 @@
 import os, sys, struct, hashlib, hmac
 from struct import unpack, pack
 from Crypto.Cipher import AES
-from array import array
 
 NUM_SUPER = 64
 CLUSTER_PER_SUPER = 16
@@ -69,37 +68,27 @@ def all_zeros(data: bytes):
 			return False
 	return True
 
+# Hamming ECC over a 512-byte chunk. Each ECC bit is the parity of a subset of
+# the data bits: the low 3 bit pairs select bits within a byte, the upper 9 the
+# byte index. Masking the chunk as one big integer and counting bits gives
+# those parities without looping over every byte.
+def _byte_mask(pattern):
+	return int.from_bytes(bytes([pattern]) * 512, "big")
+
+def _index_mask(j):
+	return int.from_bytes(bytes(0xff if (i >> j) & 1 else 0 for i in range(512)), "big")
+
+_ECC_MASKS = [_byte_mask(p) for p in (0xaa, 0xcc, 0xf0)] + [_index_mask(j) for j in range(9)]
+
 def calc_ecc(data):
-	a0 = array('B', [0,0,0,0,0,0,0,0,0,0,0,0])
-	a1 = array('B', [0,0,0,0,0,0,0,0,0,0,0,0])
-
-	for i, x in enumerate(data):
-		#x = ord(data[i])
-		for j in range(9):
-			if ((i >> j)&1)==1:
-				a1[3+j] ^= x
-			else:
-				a0[3+j] ^= x
-
-	x = a0[3] ^ a1[3]
-	a0[0] = x & 0x55
-	a1[0] = x & 0xaa
-	a0[1] = x & 0x33
-	a1[1] = x & 0xcc
-	a0[2] = x & 0x0f
-	a1[2] = x & 0xf0
-
-	for j in range(12):
-		a0[j] = parity(a0[j])
-		a1[j] = parity(a1[j])
-
-	r0 = 0
-	r1 = 0
-	for j in range(12):
-		r0 |= a0[j] << j
-		r1 |= a1[j] << j
-
-	return struct.pack("<HH",r0, r1)
+	n = int.from_bytes(data, "big")
+	total = n.bit_count() & 1
+	r0 = r1 = 0
+	for j, mask in enumerate(_ECC_MASKS):
+		p1 = (n & mask).bit_count() & 1
+		r1 |= p1 << j
+		r0 |= (total ^ p1) << j
+	return struct.pack("<HH", r0, r1)
 
 class NANDFormat:
 	def page_is(self, page, value):
