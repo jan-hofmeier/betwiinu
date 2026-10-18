@@ -111,15 +111,24 @@ CDN, decrypted with just the common key out of your `otp.bin`:
 python3 extract_boot1_nus.py --otp otp.bin -o boot1.bin
 
 # OSv10 system title (00050010-1000400a): code files + ticket
-./setup_osv10_jnus.sh otp.bin   # via JNUSTool (needs java; JNUSTool.jar in the working
-                                # directory or JNUS_JAR=/path/to/JNUSTool.jar); its config
-                                # is generated with the common key from otp.bin
+./setup_osv10_jnus.sh otp.bin   # via JNUSTool (needs java); its config is generated
+                                # with the common key from otp.bin
 # or, if you already have an encrypted dump via MLCRestorerDownloader:
 ./setup_osv10_cdecrypt.sh <dir>  # via cdecrypt (from PATH or CDECRYPT_CMD=...) on the
                                  # MLCRestorerDownloader output dir of 000500101000400a
                                  # (note: cdecrypt has the common key built in instead of
                                  # reading otp.bin)
 ```
+
+JNUSTool isn't fully automatic: it opens a window with the title's file
+tree. Tick **root** (the top entry, so everything is selected) and press
+**Download**, then close the window when the download has finished - the
+script continues after that.
+
+If there's no `JNUSTool.jar` in the working directory (and `JNUS_JAR` isn't
+set to one), `setup_osv10_jnus.sh` downloads the JNUSTool 0.3b release from
+GitHub (Maschell/JNUSTool), checks it against a pinned SHA-256 and extracts
+the jar.
 
 Both setup scripts lay the title's code out at
 `slc_rebuild/sys/title/00050010/1000400a/code/` and its ticket at
@@ -212,3 +221,34 @@ python3 build_slc.py \
     generic NAND)? Dump it raw before writing anything and extract the list
     from that dump - the factory markers are in the spare area. Never reuse
     someone else's list.
+
+## Credits
+
+This project builds on the work of many people in the Wii and Wii U scene:
+
+- **bushing / Haxx Enterprises** - the original
+  [betwiin](http://wiibrew.org/wiki/Betwiin) (2009) for the Wii NAND, which
+  `betwiin.py` and the NAND, ECC, AES/HMAC and SFFS code in `nand.py` are
+  based on.
+- **[minute_minute](https://github.com/StroopwafelCFW/minute_minute)** -
+  based on [minute](https://github.com/dazjo/minute) by SALT / Dazzozo, with
+  work by shinyquagsire23 and other contributors. Its source was the
+  reference for the SEEPROM boot1 slot parameters, the ancast header, the
+  ISFS FAT values and how SLC restores handle bad blocks.
+- **[isfshax](https://github.com/isfshax/isfshax)** by rw-r-r-0644 (and the
+  [isfshax installer](https://github.com/isfshax/isfshax_installer)) - the
+  isfshax superblock and slot layout that `extract_slc.py` recognises when
+  collecting bad blocks.
+- **[JNUSTool](https://github.com/Maschell/JNUSTool)** by Maschell - used by
+  `setup_osv10_jnus.sh` to download and decrypt the OSv10 title.
+- **[cdecrypt](https://github.com/VitaSmith/cdecrypt)** by crediar, maintained
+  by VitaSmith - used by `setup_osv10_cdecrypt.sh`.
+- **[MLCRestorerDownloader](https://github.com/Xpl0itU/MLCRestorerDownloader)**
+  by Xpl0itU - provides the encrypted title files for the cdecrypt route.
+- **[WiiBrew](https://wiibrew.org) and [WiiUBrew](https://wiiubrew.org)** -
+  the community documentation of the NAND, title and ticket formats.
+- **[pycryptodome](https://www.pycryptodome.org)** - AES for the Python tools.
+
+The FST permission rules (`slc_permissions_list.txt`), the `system.xml` /
+`sys_prod.xml` templates, the serial check digit and the bad-block marker
+layout were worked out by comparing real SLC dumps.
