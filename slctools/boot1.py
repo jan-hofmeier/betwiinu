@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """boot1 (ancast image) handling for the SLC.
 
 boot0 loads boot1 from one of two slots, each one NAND block (128 KiB) at

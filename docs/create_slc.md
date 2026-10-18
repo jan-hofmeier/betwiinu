@@ -21,7 +21,7 @@ the [README](../README.md).
   ```bash
   pip3 install -r requirements.txt
   ```
-- Java, to run JNUSTool (it's downloaded automatically). JNUSTool opens a
+- Java, to run JNUSTool (JNUSTool is downloaded automatically). JNUSTool opens a
   window, so this needs a desktop session.
 - `curl` and `openssl`
 - An internet connection, for Nintendo's update server (NUS)

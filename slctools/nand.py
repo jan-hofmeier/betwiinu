@@ -1,7 +1,6 @@
 # Betwiin v1.0, Copyright 2009 Haxx Enterprises (bushing@gmail.com)
 # Licensed to you under the terms of the GNU GPL v2.0; see http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 
-#!/usr/bin/env python3
 # pip3 install pycryptodome
 
 import os, sys, struct, hashlib, hmac
