@@ -15,18 +15,23 @@ def extract_file(nand, entry, output_path):
 
     clusters = entry.get_cluster_chain()
     bytes_left = entry.size
+    bad_hmacs = 0
     with open(output_path, "wb") as f:
-        for cluster in clusters:
+        for i, cluster in enumerate(clusters):
             if entry.name == "scfm.img":
                 data = nand.get_cluster(cluster)
             else:
                 data = nand.decrypt_cluster(cluster)
+                if entry.calc_hmac(nand, i, data) != nand.get_cluster_hmac(cluster):
+                    bad_hmacs += 1
             if bytes_left < len(data):
                 data = data[:bytes_left]
             f.write(data)
             bytes_left -= len(data)
             if bytes_left <= 0:
                 break
+    if bad_hmacs:
+        print(f"Warning: {entry_full_path}: {bad_hmacs} cluster(s) with a wrong HMAC, IOSU will refuse to read them")
     return 1
 
 def extract_directory(nand, entry, output_dir):
