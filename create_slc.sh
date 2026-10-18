@@ -1,5 +1,8 @@
 #!/bin/bash
-# Creates a new SLC image from scratch, see docs/create_slc.md:
+# Creates a new SLC image from scratch, see docs/create_slc.md.
+# usage: ./create_slc.sh <serial> [region]
+#   serial          serial from the target console's sticker, e.g. FEM123456784
+#   region          EUR or USA, only needed if the serial prefix is unknown
 #   input/otp.bin   OTP of the target console (required)
 #   input/SLC.RAW   raw dump of the SLC chip that will be written (for its
 #                   bad blocks and, if it still has one, boot1)
@@ -11,11 +14,19 @@ cd "$(dirname "$0")"
 OTP=input/otp.bin
 DUMP=input/SLC.RAW
 REBUILD=rebuild
+SERIAL=$1
+REGION=$2
 
 fail() {
     echo "Error: $*"
     exit 1
 }
+
+if [ -z "$SERIAL" ] || [ $# -gt 2 ]; then
+    echo "usage: $0 <serial> [region]"
+    echo "  serial: from the target console's sticker, e.g. FEM123456784"
+    exit 1
+fi
 
 echo "== Checking prerequisites"
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null \
@@ -25,6 +36,12 @@ python3 -c 'import Crypto.Cipher.AES' 2>/dev/null \
 for tool in java curl openssl sha256sum; do
     command -v "$tool" > /dev/null || fail "$tool not found in PATH"
 done
+python3 -c '
+import sys, sys_config
+try:
+    sys_config.parse_serial(sys.argv[1], sys.argv[2] or None)
+except ValueError as e:
+    sys.exit(f"Error: {e}")' "$SERIAL" "$REGION" || exit 1
 [ -f "$OTP" ] || fail "$OTP not found: put the target console's otp.bin there"
 if [ -e "$REBUILD" ]; then
     fail "$REBUILD/ already exists. Move it away or delete it (rm -rf $REBUILD) to start from scratch."
@@ -53,6 +70,10 @@ fi
 echo
 echo "== Downloading OSv10"
 ./setup_osv10_jnus.sh "$OTP"
+
+echo
+echo "== Generating system.xml and sys_prod.xml"
+python3 sys_config.py --serial "$SERIAL" ${REGION:+--region "$REGION"} -o "$REBUILD/slc"
 
 echo
 echo "== Building the SLC image"
