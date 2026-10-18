@@ -8,30 +8,38 @@ import hmac
 import re
 import argparse
 from nand import *
+from boot1 import parse_boot1, read_boot1, write_boot1, BOOT1_SLOT_BLOCKS, BOOT1_SLOT_CLUSTERS
 
-def allocate_clusters(fat, size, start_cluster=0x40):
+BOOT1_CLUSTERS = len(BOOT1_SLOT_BLOCKS) * BOOT1_SLOT_CLUSTERS
+SUPERBLOCK_START = TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER
+CLUSTERS_PER_BLOCK = 8
+NUM_BLOCKS = TOTAL_CLUSTER // CLUSTERS_PER_BLOCK
+
+def set_fat_entries(fat, clusters, value):
+    for c in clusters:
+        struct.pack_into(">H", fat, c * 2, value)
+
+def allocate_clusters(fat, size):
     clusters_needed = (size + CLUSTER_SIZE - 1) // CLUSTER_SIZE
     if clusters_needed == 0:
         return []
     
     allocated = []
-    # Find free clusters. In our FAT, a free cluster has value 0x0000.
-    max_cluster = TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER
-    
-    current_cluster = start_cluster
+    # Reserved (boot1, superblocks) and bad clusters are already marked in the FAT
+    current_cluster = 0
     while len(allocated) < clusters_needed:
-        if current_cluster >= max_cluster:
+        if current_cluster >= TOTAL_CLUSTER:
             raise Exception(f"Not enough free clusters (needed {clusters_needed}, got {len(allocated)})")
         
         val = struct.unpack(">H", fat[current_cluster*2:current_cluster*2+2])[0]
-        if val == 0x0000:
+        if val == FAT_CLUSTER_EMPTY:
             allocated.append(current_cluster)
         current_cluster += 1
         
     # Build chain
     for i in range(len(allocated) - 1):
         struct.pack_into(">H", fat, allocated[i]*2, allocated[i+1])
-    struct.pack_into(">H", fat, allocated[-1]*2, 0xFFFF) # end of chain
+    struct.pack_into(">H", fat, allocated[-1]*2, FAT_CLUSTER_LAST)
     
     return allocated
 
@@ -169,8 +177,8 @@ def parse_bad_blocks_file(filepath):
         return bad_blocks
     with open(filepath, "r") as f:
         for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or line.startswith("//"):
+            line = line.split("#")[0].split("//")[0].strip()
+            if not line:
                 continue
             matches = re.findall(r"0x[0-9a-fA-F]+|\b[0-9a-fA-F]+\b", line)
             for m in matches:
@@ -189,13 +197,33 @@ def main():
     parser.add_argument("--input-dir", required=True, help="Input directory")
     parser.add_argument("--output-image", required=True, help="Output SLC.RAW file")
     parser.add_argument("--otp", required=True, help="OTP bin file containing keys")
-    parser.add_argument("--boot-image", required=False, help="Base image to copy boot1/boot2 from")
-    parser.add_argument("--boot1", required=False, help="Extracted boot1.bin file to include (clusters 0-0x3f)")
+    parser.add_argument("--boot-image", required=False, help="SLC image to copy boot1 from")
+    parser.add_argument("--boot1", required=False, help="boot1.bin to write into both boot1 slots")
     parser.add_argument("--scfm", required=False, help="Extracted scfm.img file to include (overrides input directory)")
     parser.add_argument("--bad-blocks", required=False, help="Bad blocks list file (minute format) to mark in NAND & skip in FAT")
     
     args = parser.parse_args()
     
+    for slc_path in ("sys/config/system.xml", "sys/config/sys_prod.xml"):
+        if not os.path.exists(os.path.join(args.input_dir, slc_path)):
+            print(f"Warning: /{slc_path} missing from input dir; generate it with sys_config.py")
+    
+    boot1_image = None
+    try:
+        if args.boot1:
+            print(f"Reading boot1 from {args.boot1}...")
+            with open(args.boot1, "rb") as f:
+                boot1_version, boot1_image = parse_boot1(f.read())
+        elif args.boot_image:
+            print(f"Reading boot1 from {args.boot_image}...")
+            boot1_version, boot1_image = read_boot1(NANDFormatSpare(args.boot_image))
+    except ValueError as e:
+        sys.exit(f"Error: invalid boot1: {e}")
+    
+    bad_blocks = parse_bad_blocks_file(args.bad_blocks) if args.bad_blocks else set()
+    out_of_range = [b for b in bad_blocks if b >= NUM_BLOCKS]
+    if out_of_range:
+        sys.exit(f"Error: bad block(s) out of range (max 0x{NUM_BLOCKS - 1:X}): {', '.join(hex(b) for b in out_of_range)}")
     print("Reading OTP keys...")
     with open(args.otp, 'rb') as f:
         f.seek(0x170)
@@ -211,36 +239,27 @@ def main():
     output_nand = NANDFormatSpare(args.output_image)
     output_nand.set_keys(otp_key, otp_hmac)
     
-    if args.boot1:
-        print(f"Copying boot1/boot2 from {args.boot1}...")
-        with open(args.boot1, "rb") as f:
-            boot1_data = f.read()
-        for cluster in range(0, 0x40):
-            cluster_data = boot1_data[cluster*CLUSTER_SIZE : (cluster+1)*CLUSTER_SIZE]
-            if len(cluster_data) < CLUSTER_SIZE:
-                cluster_data = cluster_data.ljust(CLUSTER_SIZE, b'\x00')
-            output_nand.set_cluster(cluster, cluster_data)
-    elif args.boot_image:
-        print(f"Copying boot1/boot2 from {args.boot_image}...")
-        boot_nand = NANDFormatSpare(args.boot_image)
-        for cluster in range(0, 0x40):
-            output_nand.set_cluster(cluster, boot_nand.get_cluster(cluster))
+    if boot1_image:
+        print(f"Writing boot1 v{boot1_version} to both slots (SEEPROM version sync is up to minute)...")
+        try:
+            write_boot1(output_nand, boot1_image, bad_blocks)
+        except ValueError as e:
+            sys.exit(f"Error: {e}")
     else:
-        print("No boot image or boot1 provided, leaving boot1/boot2 empty.")
+        print("No boot image or boot1 provided, leaving boot1 slots empty.")
         
-    fat = bytearray(b"\x00" * 0x10000)
+    fat = bytearray(struct.pack(">H", FAT_CLUSTER_EMPTY) * TOTAL_CLUSTER)
     fst = bytearray(b"\x00" * (6143 * 32))
+    set_fat_entries(fat, range(BOOT1_CLUSTERS), FAT_CLUSTER_RESERVED)
+    set_fat_entries(fat, range(SUPERBLOCK_START, TOTAL_CLUSTER), FAT_CLUSTER_RESERVED)
     
-    if args.bad_blocks:
-        bad_blocks = parse_bad_blocks_file(args.bad_blocks)
-        if bad_blocks:
-            print(f"Applying {len(bad_blocks)} bad block(s) from {args.bad_blocks}...")
-            for b in sorted(bad_blocks):
-                print(f"Marking block 0x{b:04X} as bad...")
-                output_nand.mark_bad_block(b)
-                for c in range(b * 8, b * 8 + 8):
-                    if c * 2 < len(fat):
-                        struct.pack_into(">H", fat, c * 2, 0xFFF7)
+    # Bad blocks go into both places: the spare marker on the NAND and the FAT
+    if bad_blocks:
+        print(f"Applying {len(bad_blocks)} bad block(s) from {args.bad_blocks}...")
+        for b in sorted(bad_blocks):
+            print(f"Marking block 0x{b:04X} as bad...")
+            output_nand.mark_bad_block(b)
+            set_fat_entries(fat, range(b * CLUSTERS_PER_BLOCK, (b + 1) * CLUSTERS_PER_BLOCK), FAT_CLUSTER_BAD)
 
     print("Building FST and FAT...")
     flat_nodes = build_fst_tree(args.input_dir, fst, fat, args.scfm)
@@ -289,9 +308,12 @@ def main():
     superblock_buffer[0xC:0x1000C] = fat
     superblock_buffer[0x1000C:0x1000C + (6143 * 32)] = fst
     
-    start_c = TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER
     for slot in range(NUM_SUPER):
-        superblock_cluster = start_c + slot * CLUSTER_PER_SUPER
+        superblock_cluster = SUPERBLOCK_START + slot * CLUSTER_PER_SUPER
+        slot_blocks = range(superblock_cluster // CLUSTERS_PER_BLOCK, (superblock_cluster + CLUSTER_PER_SUPER) // CLUSTERS_PER_BLOCK)
+        if any(b in bad_blocks for b in slot_blocks):
+            print(f"Skipping superblock slot {slot} (bad block)")
+            continue
         print(f"Writing superblock {version} to slot {slot} at cluster 0x{superblock_cluster:x}...")
         
         digest_maker = hmac.new(output_nand.hmac_key, b'', hashlib.sha1)

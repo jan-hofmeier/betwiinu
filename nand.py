@@ -16,6 +16,12 @@ PAGE_SIZE = 2048
 PAGES_PER_CLUSTER = 8
 CLUSTER_SIZE = PAGE_SIZE * PAGES_PER_CLUSTER
 
+# FAT entry values (anything below is the next cluster of a chain)
+FAT_CLUSTER_LAST = 0xFFFB      # last cluster of a chain
+FAT_CLUSTER_RESERVED = 0xFFFC  # boot1 slots, superblocks
+FAT_CLUSTER_BAD = 0xFFFD       # bad block
+FAT_CLUSTER_EMPTY = 0xFFFE     # free
+
 def pad(s,c,l):
 	if len(s)<l:
 		s += c * (l-len(s))
@@ -288,31 +294,20 @@ class NANDFormatSpare(NANDFormat):
 		self.f.seek(num*2112+2048)
 		self.f.write(data[:64])
 
+	# Bad blocks (as seen in real dumps): pages 0 and 1 fully zeroed, data and
+	# spare. Only spare byte 0 is the marker - byte 1 is 0x00 on every written page.
 	def mark_bad_block(self, num):
 		num = int(num)
 		for p in (num * 64, num * 64 + 1):
-			spare = bytearray(self.get_spare(p))
-			spare[0] = 0x00
-			spare[1] = 0x00
-			self.set_spare(p, bytes(spare))
+			self.set_page(p, b"\x00" * 2048)
+			self.set_spare(p, b"\x00" * 64)
 
 	def is_bad_page(self, num):
 		return self.is_bad_block(num // 64)
 
 	def is_bad_block(self, num):
 		num = int(num)
-		data1, spare1 = self._get_rawpage(num * 64)
-		data2, spare2 = self._get_rawpage(num * 64 + 1)
-		
-		# Sanity check: ignore completely zeroed or unwritten blocks
-		if (all_zeros(data1) and all_zeros(spare1)) or (all_zeros(data2) and all_zeros(spare2)):
-			return False
-
-		b1 = spare1[0] if isinstance(spare1[0], int) else ord(spare1[0])
-		b2 = spare2[0] if isinstance(spare2[0], int) else ord(spare2[0])
-		if b1 != 0xff or b2 != 0xff:
-			return True
-		return False
+		return any(self.get_spare(p)[0] != 0xff for p in (num * 64, num * 64 + 1))
 
 class NANDFormatSDDump(NANDFormat):
 	spare_supported = True
