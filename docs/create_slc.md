@@ -20,9 +20,6 @@ the [README](../README.md).
   ```bash
   pip3 install -r requirements.txt
   ```
-- Java, to run JNUSTool (JNUSTool is downloaded automatically). JNUSTool opens a
-  window, so this needs a desktop session.
-- `curl` and `openssl`
 - An internet connection, for Nintendo's update server (NUS)
 - [minute_minute](https://github.com/StroopwafelCFW/minute_minute) on the
   console, to dump and restore the SLC
@@ -83,19 +80,13 @@ python3 download_boot1.py
 ### 3.3 OSv10
 
 ```bash
-./setup_osv10_jnus.sh
+python3 download_osv10.py
 ```
 
-JNUSTool opens a window with the title's file tree:
-1. Tick **root** (the top entry, so everything is selected).
-2. Press **Download**.
-3. Close the window when the download has finished.
-
-The script then puts the code, the ticket, `cert.sys` and `title.list`
-into `rebuild/slc/`.
-
-If you already have the title from MLCRestorerDownloader, you can use
-`./setup_osv10_cdecrypt.sh <dir>` instead (needs cdecrypt).
+This downloads OSv10 from NUS (about 23 MB) and puts the files, the ticket,
+`cert.sys` and `title.list` into `rebuild/slc/`. If you already have the
+title from MLCRestorerDownloader, add `--source <its 000500101000400a dir>`
+to use that instead.
 
 ### 3.4 Config
 
