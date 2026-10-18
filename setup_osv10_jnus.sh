@@ -13,9 +13,24 @@ echo "Starting OSv10 setup for SLC rebuild..."
 BASE_DIR="$(pwd)"
 SLC_REBUILD="$BASE_DIR/slc_rebuild"
 JNUS_DIR="$BASE_DIR/jnus_test_build"
+JNUS_RELEASE_URL="https://github.com/Maschell/JNUSTool/releases/download/0.3b/release.zip"
+JNUS_RELEASE_SHA256="95ef9f2c9b421cc05b9d6e4c5c0c39161005920617a6b19137e4e211130e572b"
+
+if [ -z "$JNUS_JAR" ] && [ ! -f JNUSTool.jar ]; then
+    echo "JNUSTool.jar not found, downloading JNUSTool 0.3b from GitHub..."
+    JNUS_ZIP="$(mktemp)"
+    curl -sfL -o "$JNUS_ZIP" "$JNUS_RELEASE_URL"
+    if ! echo "$JNUS_RELEASE_SHA256  $JNUS_ZIP" | sha256sum -c --quiet; then
+        rm -f "$JNUS_ZIP"
+        echo "Error: downloaded JNUSTool release doesn't match the expected SHA-256"
+        exit 1
+    fi
+    python3 -I -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extract('JNUSTool.jar', sys.argv[2])" "$JNUS_ZIP" .
+    rm -f "$JNUS_ZIP"
+fi
 JNUS_JAR="$(realpath "${JNUS_JAR:-JNUSTool.jar}")"
 if [ ! -f "$JNUS_JAR" ]; then
-    echo "Error: $JNUS_JAR not found. Put JNUSTool.jar in the working directory or set JNUS_JAR=/path/to/JNUSTool.jar"
+    echo "Error: $JNUS_JAR not found"
     exit 1
 fi
 
@@ -45,6 +60,10 @@ https://tagaya-wup.cdn.nintendo.net/tagaya/versionlist/EUR/EU/list/%d.versionlis
 EOF_CONFIG
 
 echo "Downloading decrypted OSv10 files via JNUSTool..."
+echo
+echo "  JNUSTool opens a window now: tick \"root\" in the file tree and press"
+echo "  \"Download\". Close the window once the download has finished."
+echo
 java -jar "$JNUS_JAR" 000500101000400A > jnus_dec.log
 
 echo "Moving decrypted code files..."
