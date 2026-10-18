@@ -78,5 +78,7 @@ python3 build_slc.py --rebuild-dir "$REBUILD" --otp "$OTP"
 
 echo
 echo "Done: $REBUILD/SLC.RAW"
-echo "Next: copy it to the root of the SD card as SLC.RAW, restore it with minute"
-echo "(Restore SLC.RAW), then install the other system titles with wafel_setup_mlc."
+echo "Next (details in docs/create_slc.md):"
+echo "1. Copy it to the root of the SD card as SLC.RAW, restore it with minute (Restore SLC.RAW)."
+echo "2. Boot once without wafel_setup_mlc.ipx. It crashes, that's expected. Power off."
+echo "3. Reinstall all system titles (MLC ones too) with wafel_setup_mlc."

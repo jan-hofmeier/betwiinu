@@ -8,8 +8,8 @@ dump for another console.
 ## Guides
 
 - [Create a new SLC from scratch](docs/create_slc.md) - boot1 + OSv10 for a
-  console whose SLC is lost or replaced; the other system titles are installed
-  afterwards with wafel_setup_mlc.
+  console whose SLC is lost or replaced; all other system titles (the MLC
+  ones too) are reinstalled afterwards with wafel_setup_mlc.
 - [Modify an existing SLC](docs/modify_slc.md) - extract a dump, change files,
   repack it for the same console.
 
@@ -217,8 +217,9 @@ python3 download_osv10.py --source <dir>   # from MLCRestorerDownloader's 000500
 - The ticket's path was confirmed on a real dump: the title ID is stored at
   offset `0x1DC` of each `.tik`.
 
-Only OSv10 is put into the SLC this way. The other SLC system titles are
-installed on the console afterwards with wafel_setup_mlc (see the
+Only OSv10 is put into the SLC this way. All other system titles, the ones
+on the MLC included, have to be reinstalled afterwards with wafel_setup_mlc:
+their tickets are on the SLC, and so is the MLC's `scfm.img` (see the
 [guide](docs/create_slc.md)).
 
 ### sys_config.py
