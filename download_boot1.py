@@ -7,68 +7,27 @@ and decrypt it with the common key read from otp.bin.
 import os
 import sys
 import argparse
-import urllib.request
-import struct
-from Crypto.Cipher import AES
-from slctools.boot1 import parse_boot1, ANCAST_MAGIC
+import urllib.error
+from slctools.boot1 import parse_boot1
+from slctools.nus import Title, decrypt_content, decrypt_title_key, parse_tmd, read_common_key
 
-TITLE_ID_HEX = "0005001010000100"
-TITLE_ID = bytes.fromhex(TITLE_ID_HEX)
-BASE_URL = f"http://ccs.cdn.wup.shop.nintendo.net/ccs/download/{TITLE_ID_HEX}"
+TITLE_ID = "0005001010000100"
 
-def read_common_key_from_otp(otp_path):
-    with open(otp_path, "rb") as f:
-        f.seek(0xE0)
-        common_key = f.read(16)
-    if len(common_key) != 16:
-        raise ValueError(f"Could not read 16-byte common key from {otp_path} at offset 0xE0")
-    return common_key
-
-def download_boot1(otp_path, output_path, patch_prod=True):
+def download_boot1(otp_path, output_path):
     print(f"Reading Wii U Common Key from {otp_path} (offset 0xE0)...")
-    common_key = read_common_key_from_otp(otp_path)
+    common_key = read_common_key(otp_path)
 
-    print(f"Downloading ticket (cetk) for Title {TITLE_ID_HEX} from NUS...")
-    tik_url = f"{BASE_URL}/cetk"
-    req = urllib.request.Request(tik_url, headers={"User-Agent": "WiiU/1.0"})
-    with urllib.request.urlopen(req) as resp:
-        tik_data = resp.read()
+    title = Title(TITLE_ID)
+    tmd = title.tmd()
+    title_key = decrypt_title_key(title.cetk(), common_key)
 
-    # Encrypted title key is located at offset 0x1BF in the ticket
-    encrypted_title_key = tik_data[0x1BF:0x1BF+16]
-    iv_tik = TITLE_ID + b"\x00" * 8
-
-    cipher_tik = AES.new(common_key, AES.MODE_CBC, iv_tik)
-    title_key = cipher_tik.decrypt(encrypted_title_key)
-    print(f"Decrypted Title Key: {title_key.hex()}")
-
-    print("Downloading boot1 content (00000009) from NUS...")
-    app_url = f"{BASE_URL}/00000009"
-    req = urllib.request.Request(app_url, headers={"User-Agent": "WiiU/1.0"})
-    with urllib.request.urlopen(req) as resp:
-        app_data = resp.read()
-
-    print(f"Downloaded encrypted content 00000009 ({len(app_data)} bytes)")
-
-    # Decrypt content 00000009 (index 0x0009)
-    iv_app = struct.pack(">H", 9) + b"\x00" * 14
-    cipher_app = AES.new(title_key, AES.MODE_CBC, iv_app)
-    decrypted_boot1 = bytearray(cipher_app.decrypt(app_data))
-
-    header_magic = decrypted_boot1[:4].hex()
-    print(f"Decrypted Header Magic: {header_magic}")
-
-    if patch_prod and decrypted_boot1[:4] == bytes.fromhex("efab82d9"):
-        decrypted_boot1[1] = 0xA2
-        print(f"Patched Ancast header magic to Prod: {decrypted_boot1[:4].hex()}")
-
-    # Validate the hash and strip the content padding. The hash only covers
-    # the body, so check with the prod magic even if it wasn't patched.
+    # The title has a single content: boot1, padded
+    content_id, index, content_type, size, sha1 = parse_tmd(tmd)[0]
+    content = decrypt_content(title.content(content_id), title_key, index, content_type, size, sha1)
     try:
-        version, image = parse_boot1(ANCAST_MAGIC + bytes(decrypted_boot1[4:]))
+        version, decrypted_boot1 = parse_boot1(content)
     except ValueError as e:
-        sys.exit(f"Error: downloaded boot1 is invalid: {e}")
-    decrypted_boot1 = decrypted_boot1[:len(image)]
+        raise ValueError(f"downloaded boot1 is invalid: {e}")
     print(f"boot1 v{version}, hash ok")
 
     parent_dir = os.path.dirname(output_path)
@@ -84,10 +43,12 @@ def main():
     parser = argparse.ArgumentParser(description="Download boot1 from NUS (title 00050010-10000100)")
     parser.add_argument("--otp", default="input/otp.bin", help="otp.bin to read the common key from (default: input/otp.bin)")
     parser.add_argument("--output", "-o", default="rebuild/boot1.bin", help="Output file for boot1 (default: rebuild/boot1.bin)")
-    parser.add_argument("--no-patch", action="store_true", help="Do not patch Ancast magic 0xEFAB82D9 to 0xEFA282D9")
     args = parser.parse_args()
 
-    download_boot1(args.otp, args.output, patch_prod=not args.no_patch)
+    try:
+        download_boot1(args.otp, args.output)
+    except (OSError, ValueError, urllib.error.URLError) as e:
+        sys.exit(f"Error: {e}")
 
 if __name__ == "__main__":
     main()

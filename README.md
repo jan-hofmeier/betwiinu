@@ -19,8 +19,8 @@ This README describes what each tool does.
 
 - Python 3.10 or newer with [pycryptodome](https://www.pycryptodome.org)
   (`pip3 install -r requirements.txt`)
-- For `setup_osv10_jnus.sh`: Java, `curl` and `openssl`
-- For `setup_osv10_cdecrypt.sh`: [cdecrypt](https://github.com/VitaSmith/cdecrypt)
+- An internet connection for the tools that download from Nintendo's update
+  server (NUS)
 
 ## Layout
 
@@ -35,7 +35,7 @@ rebuild/boot1.bin        boot1 image
 rebuild/bad_blocks.txt   bad block list of the chip that will be written
 rebuild/permissions.txt  FST metadata from an extracted dump
 rebuild/SLC.RAW          the built image
-downloads/               JNUSTool and its downloads
+downloads/               encrypted NUS downloads, reused on the next run
 output/                  betwiin.py's output
 ```
 
@@ -46,7 +46,8 @@ The rest of the code lives in subfolders:
 
 - `slctools/` - the shared library: `nand.py` (NAND pages and spare area,
   ECC, AES/HMAC, SFFS superblock/FST/FAT parsing), `boot1.py` (boot1 slots
-  and ancast validation) and `rights.py` (tickets and `cert.sys`).
+  and ancast validation), `nus.py` (NUS download, title decryption, FST) and
+  `rights.py` (tickets and `cert.sys`).
 - `research/` - `extract_perms.py`, which lists the FST metadata of a dump,
   and its output `slc_permissions_list.txt`, which the permission rules of
   `build_slc.py` are based on.
@@ -67,7 +68,7 @@ prefix is unknown):
 1. checks the prerequisites and the serial;
 2. extracts the bad blocks and boot1 from `input/SLC.RAW`, downloading boot1
    from NUS if the dump has no valid one;
-3. downloads OSv10 with JNUSTool;
+3. downloads OSv10 with `download_osv10.py`;
 4. generates `system.xml` and `sys_prod.xml` with `sys_config.py`;
 5. builds `rebuild/SLC.RAW`.
 
@@ -167,15 +168,16 @@ python3 build_slc.py --input-dir dir --output-image SLC.RAW --otp otp.bin \
 ### download_boot1.py
 
 Downloads boot1 (title 00050010-10000100, content 00000009) from NUS and
-decrypts it with the common key from `input/otp.bin`. The development magic
-is patched to the retail one (`--no-patch` keeps it). The image is validated
-like an extracted one and the content padding is stripped, so it gives the
-same file as `extract_slc.py boot1` (default `rebuild/boot1.bin`).
+decrypts it with the common key from `input/otp.bin`. The content is checked
+against the TMD, the image is validated like an extracted one, and the
+content padding is stripped, so it gives the same file as
+`extract_slc.py boot1` (default `rebuild/boot1.bin`).
 
-### setup_osv10_jnus.sh / setup_osv10_cdecrypt.sh
+### download_osv10.py
 
-Put OSv10 (00050010-1000400a) into `rebuild/slc`:
-- its code at `sys/title/00050010/1000400a/code/`;
+Downloads OSv10 (00050010-1000400a) from NUS and puts it into `rebuild/slc`:
+- its files at `sys/title/00050010/1000400a/code/`, with `title.tmd` and
+  `title.fst`;
 - its ticket at `sys/rights/ticket/sys/0002/00000000.tik`;
 - the certificate store `sys/rights/sys/cert.sys`;
 - `sys/rights/sys/title.list`, the list of titles with a ticket.
@@ -183,30 +185,24 @@ Put OSv10 (00050010-1000400a) into `rebuild/slc`:
 Only these are replaced; the rest of `rebuild/slc` is left alone.
 
 ```bash
-./setup_osv10_jnus.sh [otp.bin]   # default input/otp.bin
-./setup_osv10_cdecrypt.sh <MLCRestorerDownloader output dir of 000500101000400a>
+python3 download_osv10.py                  # from NUS
+python3 download_osv10.py --source <dir>   # from MLCRestorerDownloader's 000500101000400a
 ```
 
-**JNUS route** (`setup_osv10_jnus.sh`):
-- Downloads the title with JNUSTool. Its config is generated with the common
-  key from the OTP, and removed again afterwards.
-- If there's no `downloads/JNUSTool.jar` (and `JNUS_JAR` doesn't point to
-  one), it downloads the JNUSTool 0.3b release from GitHub, checks it against
-  a pinned SHA-256 and extracts the jar.
-- JNUSTool isn't fully automatic: it opens a window with the title's file
-  tree. Tick **root** (the top entry, so everything is selected), press
-  **Download**, then close the window when the download has finished. The
-  script continues after that.
-- The TMD and ticket are fetched straight from NUS with `curl`, and the FST
-  is decrypted with `openssl`.
+**Download and decryption** (`slctools/nus.py`):
+- The title key is decrypted from the ticket with the common key from the
+  OTP; there's no key in the code.
+- Each content is decrypted and checked against its SHA-1 in the TMD, then
+  the files are cut out of the contents as the FST describes. Hashed
+  contents aren't supported, OSv10 has none.
+- The encrypted downloads are kept in `downloads/000500101000400a` and reused
+  on the next run (`--cache-dir`).
+- `--source` takes an already downloaded title instead (`tmd`/`title.tmd`,
+  `cetk`/`title.tik`, contents as `<id>` or `<id>.app`).
+- The result is byte-identical to the OSv10 on a real console, `title.tmd`
+  and `title.fst` included.
 
-**cdecrypt route** (`setup_osv10_cdecrypt.sh`):
-- Decrypts a title already downloaded with MLCRestorerDownloader, using
-  cdecrypt (from `PATH`, or set `CDECRYPT_CMD`).
-- The ticket and TMD are taken from that download.
-- cdecrypt has the common key built in instead of reading the OTP.
-
-**Ticket and certificates** (both routes, `slctools/rights.py`):
+**Ticket and certificates** (`slctools/rights.py`):
 - System titles have common tickets, so the same ticket works on every
   console.
 - NUS appends the certificate chain to what it serves: the TMD comes with
@@ -283,13 +279,13 @@ This project builds on the work of many people in the Wii and Wii U scene:
   [isfshax installer](https://github.com/isfshax/isfshax_installer)) - the
   isfshax superblock and slot layout that `extract_slc.py` recognises when
   collecting bad blocks.
-- **[JNUSTool](https://github.com/Maschell/JNUSTool)** by Maschell - used by
-  `setup_osv10_jnus.sh` to download and decrypt the OSv10 title.
-- **[cdecrypt](https://github.com/VitaSmith/cdecrypt)** by crediar, maintained
-  by VitaSmith - used by `setup_osv10_cdecrypt.sh`.
+- **[JNUSTool](https://github.com/Maschell/JNUSTool)** by Maschell and
+  **[cdecrypt](https://github.com/VitaSmith/cdecrypt)** by crediar
+  (maintained by VitaSmith) - earlier versions used them to download and
+  decrypt OSv10; they were the reference for `slctools/nus.py`.
 - **[MLCRestorerDownloader](https://github.com/Xpl0itU/MLCRestorerDownloader)**
-  by Xpl0itU - downloads the system titles, for the cdecrypt route and for
-  wafel_setup_mlc.
+  by Xpl0itU - downloads the system titles for wafel_setup_mlc
+  (`download_osv10.py --source` can also take its OSv10 download).
 - **[WiiBrew](https://wiibrew.org) and [WiiUBrew](https://wiiubrew.org)** -
   the community documentation of the NAND, title and ticket formats.
 - **[pycryptodome](https://www.pycryptodome.org)** - AES for the Python tools.

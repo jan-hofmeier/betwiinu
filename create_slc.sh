@@ -33,9 +33,6 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null \
     || fail "python3 3.10 or newer is needed"
 python3 -c 'import Crypto.Cipher.AES' 2>/dev/null \
     || fail "pycryptodome is missing (pip3 install -r requirements.txt)"
-for tool in java curl openssl sha256sum; do
-    command -v "$tool" > /dev/null || fail "$tool not found in PATH"
-done
 python3 -c '
 import sys, sys_config
 try:
@@ -69,7 +66,7 @@ fi
 
 echo
 echo "== Downloading OSv10"
-./setup_osv10_jnus.sh "$OTP"
+python3 download_osv10.py --otp "$OTP" -o "$REBUILD/slc"
 
 echo
 echo "== Generating system.xml and sys_prod.xml"
