@@ -2,9 +2,13 @@
 """Generate /sys/config/system.xml and /sys/config/sys_prod.xml.
 
 sys_prod.xml holds the console's production data (serial, region, model).
-The serial is the one printed on the sticker of the target console, e.g.
-"FEM123456784": a code_id prefix (letters) followed by a 9-digit serial_id
-whose last digit is a check digit.
+It comes from one of:
+- the console's SEEPROM (seeprom.bin, dumped with minute), which holds all of
+  sys_prod in plain text, so any region works;
+- the serial printed on the sticker of the target console, e.g.
+  "FEM123456784": a code_id prefix (letters) followed by a 9-digit serial_id
+  whose last digit is a check digit. The other fields come from the per-region
+  values below (EUR and USA only).
 
 Both templates reproduce byte-for-byte the files found in real dumps
 (firmware 5.5.x, sys_prod version 5 / system version 21).
@@ -16,9 +20,11 @@ import argparse
 import os
 import re
 import sys
+from slctools.seeprom import read_seeprom
 
-# Per-region values, taken from real EUR/USA dumps. Other regions (JPN, ...)
-# aren't included because no verified dump was available.
+# Per-region values for --serial, taken from real EUR/USA dumps. Other regions
+# (JPN, ...) aren't included because no verified dump was available; with
+# --seeprom they come from the SEEPROM instead.
 REGIONS = {
     "EUR": {
         "product_area": 4,
@@ -27,7 +33,6 @@ REGIONS = {
         "5ghz_country_code": "EU",
         "5ghz_country_code_revision": 24,
         "model_number": "WUP-101(03)",
-        "default_title_id": "0005001010040200",  # Wii U Menu (EUR)
     },
     "USA": {
         "product_area": 2,
@@ -36,8 +41,17 @@ REGIONS = {
         "5ghz_country_code": "Q2",
         "5ghz_country_code_revision": 7,
         "model_number": "WUP-101(02)",
-        "default_title_id": "0005001010040100",  # Wii U Menu (USA)
     },
+}
+
+# sys_prod product_area -> region
+AREA_REGIONS = {1: "JPN", 2: "USA", 4: "EUR"}
+
+# system.xml default_title_id: the region's Wii U Menu
+MENU_TITLE_IDS = {
+    "JPN": "0005001010040000",
+    "USA": "0005001010040100",
+    "EUR": "0005001010040200",
 }
 
 # Serial prefix (code_id) -> region, as seen on real consoles.
@@ -52,7 +66,7 @@ SYS_PROD_TEMPLATE = """\
 <?xml version="1.0" encoding="utf-8"?>
 <sys_prod type="complex" access="710">
   <version type="unsignedInt" length="4" access="710">5</version>
-  <eeprom_version type="unsignedShort" length="2" access="710">1</eeprom_version>
+  <eeprom_version type="unsignedShort" length="2" access="710">{eeprom_version}</eeprom_version>
   <product_area type="unsignedInt" length="4" access="710">{product_area}</product_area>
   <game_region type="unsignedInt" length="4" access="700">{game_region}</game_region>
   <ntsc_pal type="string" length="5" access="700">{ntsc_pal}</ntsc_pal>
@@ -125,30 +139,82 @@ def parse_serial(serial, region=None):
 
     return code_id, serial_id, region
 
-def generate_sys_prod(serial, region=None):
+def sys_prod_from_serial(serial, region=None):
     code_id, serial_id, region = parse_serial(serial, region)
-    return SYS_PROD_TEMPLATE.format(code_id=code_id, serial_id=serial_id, **REGIONS[region]).encode("utf-8")
+    return dict(REGIONS[region], code_id=code_id, serial_id=serial_id, eeprom_version=1)
+
+def sys_prod_from_seeprom(path, serial=None, region=None, otp_path=None):
+    """Reads sys_prod from a SEEPROM dump; returns (sys_prod, boot1_versions).
+
+    A serial or region passed as well has to match the SEEPROM's. The OTP is
+    only needed to read the boot1 versions from an encrypted dump.
+    """
+    info = read_seeprom(path, otp_path)
+    sys_prod = info["sys_prod"]
+    seeprom_serial = sys_prod["code_id"] + sys_prod["serial_id"]
+    seeprom_region = AREA_REGIONS.get(sys_prod["product_area"])
+    if seeprom_region is None:
+        raise ValueError(f"{path}: unknown product_area {sys_prod['product_area']} (not a SEEPROM dump?)")
+
+    if serial is not None:
+        serial = serial.strip().upper().replace(" ", "")
+        if serial != seeprom_serial:
+            raise ValueError(f"Serial {serial} doesn't match the SEEPROM's {seeprom_serial} (SEEPROM from another console?)")
+    if region is not None and region != seeprom_region:
+        raise ValueError(f"Region {region} doesn't match the SEEPROM's {seeprom_region}")
+
+    # The SEEPROM is authoritative, so these only warn
+    m = SERIAL_RE.match(seeprom_serial)
+    if not m:
+        print(f"Warning: SEEPROM serial '{seeprom_serial}' doesn't look like letters followed by 9 digits")
+    elif int(m.group(2)[8]) != serial_check_digit(m.group(2)):
+        print(f"Warning: SEEPROM serial {seeprom_serial} has a wrong check digit (corrupt dump?)")
+    known_region = CODE_ID_REGIONS.get(sys_prod["code_id"])
+    if known_region is not None and known_region != seeprom_region:
+        print(f"Warning: SEEPROM serial prefix {sys_prod['code_id']} belongs to {known_region}, but its product_area is {seeprom_region}")
+
+    return sys_prod, info["boot1_versions"]
+
+def region_of(sys_prod):
+    return AREA_REGIONS[sys_prod["product_area"]]
+
+def generate_sys_prod(sys_prod):
+    return SYS_PROD_TEMPLATE.format(**sys_prod).encode("utf-8")
 
 def generate_system(region):
-    return SYSTEM_TEMPLATE.format(**REGIONS[region]).encode("utf-8")
+    return SYSTEM_TEMPLATE.format(default_title_id=MENU_TITLE_IDS[region]).encode("utf-8")
 
-def generate_config_files(serial, region=None):
+def generate_config_files(sys_prod):
     """Returns {slc_path: bytes} for both config files."""
-    _, _, region = parse_serial(serial, region)
     return {
-        "/sys/config/system.xml": generate_system(region),
-        "/sys/config/sys_prod.xml": generate_sys_prod(serial, region),
+        "/sys/config/system.xml": generate_system(region_of(sys_prod)),
+        "/sys/config/sys_prod.xml": generate_sys_prod(sys_prod),
     }
 
 def main():
     parser = argparse.ArgumentParser(description="Generate system.xml and sys_prod.xml for a Wii U SLC")
-    parser.add_argument("--serial", required=True, help="Serial from the target console's sticker, e.g. FEM123456784")
-    parser.add_argument("--region", choices=sorted(REGIONS), help="Region (default: derived from the serial prefix)")
+    parser.add_argument("--seeprom", help="SEEPROM dump of the target console (seeprom.bin from minute); everything is taken from it")
+    parser.add_argument("--serial", help="Serial from the target console's sticker, e.g. FEM123456784 (checked against --seeprom if given)")
+    parser.add_argument("--region", choices=sorted(REGIONS), help="Region (default: derived from the serial prefix or the SEEPROM)")
+    parser.add_argument("--otp", default=None, help="OTP of the target console, to read the boot1 versions from an encrypted SEEPROM (default: input/otp.bin if it exists)")
     parser.add_argument("-o", "--output-dir", default="rebuild/slc", help="SLC root directory to write sys/config/*.xml into (default: rebuild/slc)")
     args = parser.parse_args()
 
+    if not args.seeprom and not args.serial:
+        parser.error("pass --seeprom and/or --serial")
+    otp = args.otp
+    if otp is None and os.path.exists("input/otp.bin"):
+        otp = "input/otp.bin"
+
     try:
-        files = generate_config_files(args.serial, args.region)
+        if args.seeprom:
+            sys_prod, boot1_versions = sys_prod_from_seeprom(args.seeprom, args.serial, args.region, otp)
+            print(f"SEEPROM: serial {sys_prod['code_id']}{sys_prod['serial_id']}, {region_of(sys_prod)}, {sys_prod['model_number']}")
+            if boot1_versions:
+                print(f"SEEPROM: boot1 v{boot1_versions[0]} (primary), v{boot1_versions[1]} (copy)")
+        else:
+            sys_prod = sys_prod_from_serial(args.serial, args.region)
+        files = generate_config_files(sys_prod)
     except ValueError as e:
         sys.exit(f"Error: {e}")
 

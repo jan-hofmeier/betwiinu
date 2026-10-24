@@ -30,6 +30,7 @@ root. They share these working folders (all ignored by git):
 ```
 input/SLC.RAW            your SLC dump (minute: Dump SLC.RAW)
 input/otp.bin            the console's OTP
+input/seeprom.bin        the console's SEEPROM (optional, minute dumps it)
 rebuild/slc/             the files that go into the SLC
 rebuild/boot1.bin        boot1 image
 rebuild/bad_blocks.txt   bad block list of the chip that will be written
@@ -46,8 +47,9 @@ The rest of the code lives in subfolders:
 
 - `slctools/` - the shared library: `nand.py` (NAND pages and spare area,
   ECC, AES/HMAC, SFFS superblock/FST/FAT parsing), `boot1.py` (boot1 slots
-  and ancast validation), `nus.py` (NUS download, title decryption, FST) and
-  `rights.py` (tickets and `cert.sys`).
+  and ancast validation), `nus.py` (NUS download, title decryption, FST),
+  `rights.py` (tickets and `cert.sys`) and `seeprom.py` (SEEPROM sys_prod
+  and boot1 parameters).
 - `research/` - `extract_perms.py`, which lists the FST metadata of a dump,
   and its output `slc_permissions_list.txt`, which the permission rules of
   `build_slc.py` are based on.
@@ -57,15 +59,18 @@ The rest of the code lives in subfolders:
 
 ### create_slc.sh
 
-Runs the whole [from-scratch guide](docs/create_slc.md) in one go. It takes
-the serial from the target console's sticker (and the region, if the serial
-prefix is unknown):
+Runs the whole [from-scratch guide](docs/create_slc.md) in one go. If
+`input/seeprom.bin` exists, the console's production data is taken from it
+and no arguments are needed; a serial passed as well is checked against it.
+Otherwise it takes the serial from the target console's sticker (and the
+region, if the serial prefix is unknown):
 
 ```bash
-./create_slc.sh FEM123456784
+./create_slc.sh                 # with input/seeprom.bin
+./create_slc.sh FEM123456784    # without
 ```
 
-1. checks the prerequisites and the serial;
+1. checks the prerequisites and the serial or SEEPROM;
 2. extracts the bad blocks and boot1 from `input/SLC.RAW`, downloading boot1
    from NUS if the dump has no valid one;
 3. downloads OSv10 with `download_osv10.py`;
@@ -225,21 +230,31 @@ their tickets are on the SLC, and so is the MLC's `scfm.img` (see the
 ### sys_config.py
 
 Generates `/sys/config/system.xml` and `/sys/config/sys_prod.xml` from the
-serial on the target console's sticker. A rebuilt SLC needs both: the console
-doesn't boot without them.
+target console's SEEPROM or the serial on its sticker. A rebuilt SLC needs
+both: the console doesn't boot without them.
 
 ```bash
-python3 sys_config.py --serial FEM123456784   # writes into rebuild/slc
+python3 sys_config.py --seeprom input/seeprom.bin   # writes into rebuild/slc
+python3 sys_config.py --serial FEM123456784
 ```
+
+- **From the SEEPROM (preferred):** the SEEPROM holds all of `sys_prod` in
+  plain text at 0x140 (region, 5 GHz country code, serial, model), so the
+  result is the console's own `sys_prod.xml`, for any region including JPN.
+  Both the encrypted `seeprom.bin` and minute's `seeprom_decrypted.bin` work.
+  With `--otp` (default `input/otp.bin`), the encrypted parameter blocks are
+  decrypted with the OTP's SEEPROM key and checked against their CRC32, and
+  the boot1 versions are printed. A `--serial` or `--region` passed as well
+  has to match the SEEPROM's.
 
 - **Serial validation:** a letter prefix (`code_id`) followed by 9 digits, the
   last of which is a check digit
   (`(10 - (d1+d3+d5+d7 + 3*(d2+d4+d6+d8))) % 10`, the same scheme as the Wii).
 - **Region:** the prefix selects it (`FEM` = EUR, `FW` = USA); for other
   prefixes pass `--region`.
-- **Supported regions:** only EUR and USA, since their values were taken from
-  real dumps. The generated EUR files are byte-identical to a real
-  console's.
+- **Supported regions (serial only):** only EUR and USA, since their values
+  were taken from real dumps. The generated EUR files are byte-identical to a
+  real console's.
 
 ### betwiin.py
 

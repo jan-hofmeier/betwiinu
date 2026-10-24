@@ -7,7 +7,7 @@ boot:
 - OSv10 (00050010-1000400a), its ticket, the certificate store
   (`cert.sys`) and the ticket index (`title.list`);
 - the config files `system.xml` and `sys_prod.xml`, generated from the
-  console's serial.
+  console's SEEPROM or serial.
 
 It has no other system titles and no tickets for them. All system titles,
 including the ones on the MLC, are reinstalled afterwards (last step).
@@ -25,7 +25,7 @@ the [README](../README.md).
 - [minute_minute](https://github.com/StroopwafelCFW/minute_minute) on the
   console, to dump and restore the SLC
 
-## 2. Get the OTP, an SLC dump and the serial
+## 2. Get the OTP, the SEEPROM, an SLC dump and the serial
 
 Put these into `input/`:
 
@@ -38,16 +38,25 @@ Put these into `input/`:
   If the SLC chip was replaced, dump the new chip *before* writing anything
   to it. Its factory bad-block markers are only in that raw dump.
 
-Also note the **serial** from the sticker on the bottom of the console, e.g.
-`FEM123456784`. It goes into `sys_prod.xml`, and its prefix selects the
-region (`FEM` = EUR, `FW` = USA; only these two regions are supported).
+- **`input/seeprom.bin`** (recommended) - the SEEPROM of the target console,
+  dumped with minute. It holds the console's production data (serial, region,
+  model), from which `sys_prod.xml` is rebuilt exactly. minute's
+  `seeprom_decrypted.bin` works too.
+
+Without a SEEPROM dump, note the **serial** from the sticker on the bottom of
+the console, e.g. `FEM123456784`. It goes into `sys_prod.xml`, and its prefix
+selects the region (`FEM` = EUR, `FW` = USA; only these two regions are
+supported this way). With a SEEPROM dump the serial is optional; if given,
+it's checked against the SEEPROM's, which catches a SEEPROM from another
+console.
 
 ## 3. Build it
 
-Either run the wrapper with the serial, which does steps 3.1 to 3.5 for you:
+Either run the wrapper, which does steps 3.1 to 3.5 for you:
 
 ```bash
-./create_slc.sh FEM123456784
+./create_slc.sh                 # with input/seeprom.bin
+./create_slc.sh FEM123456784    # without
 ```
 
 If the serial prefix is unknown, add the region: `./create_slc.sh <serial> EUR`.
@@ -92,11 +101,18 @@ to use that instead.
 ### 3.4 Config
 
 ```bash
+python3 sys_config.py --seeprom input/seeprom.bin
+```
+
+or, without a SEEPROM dump:
+
+```bash
 python3 sys_config.py --serial FEM123456784
 ```
 
-This writes `rebuild/slc/sys/config/system.xml` and `sys_prod.xml`. Pass
-`--region EUR` or `--region USA` if the serial prefix is unknown.
+This writes `rebuild/slc/sys/config/system.xml` and `sys_prod.xml`. With
+`--serial`, pass `--region EUR` or `--region USA` if the serial prefix is
+unknown.
 
 ### 3.5 Build the image
 

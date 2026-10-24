@@ -1,9 +1,12 @@
 #!/bin/bash
 # Creates a new SLC image from scratch, see docs/create_slc.md.
-# usage: ./create_slc.sh <serial> [region]
-#   serial          serial from the target console's sticker, e.g. FEM123456784
+# usage: ./create_slc.sh [serial] [region]
+#   serial          serial from the target console's sticker, e.g. FEM123456784;
+#                   optional if input/seeprom.bin exists (checked against it)
 #   region          EUR or USA, only needed if the serial prefix is unknown
 #   input/otp.bin   OTP of the target console (required)
+#   input/seeprom.bin  SEEPROM of the target console (optional); sys_prod.xml
+#                   is then taken from it instead of the serial
 #   input/SLC.RAW   raw dump of the SLC chip that will be written (for its
 #                   bad blocks and, if it still has one, boot1)
 # The result is rebuild/SLC.RAW; boot1, the bad block list and the files that
@@ -12,6 +15,7 @@ set -e
 cd "$(dirname "$0")"
 
 OTP=input/otp.bin
+SEEPROM=input/seeprom.bin
 DUMP=input/SLC.RAW
 REBUILD=rebuild
 SERIAL=$1
@@ -22,10 +26,15 @@ fail() {
     exit 1
 }
 
-if [ -z "$SERIAL" ] || [ $# -gt 2 ]; then
-    echo "usage: $0 <serial> [region]"
+if [ $# -gt 2 ] || { [ -z "$SERIAL" ] && [ ! -f "$SEEPROM" ]; }; then
+    echo "usage: $0 [serial] [region]"
     echo "  serial: from the target console's sticker, e.g. FEM123456784"
+    echo "          (optional if $SEEPROM exists)"
     exit 1
+fi
+SYS_CONFIG_ARGS=(${SERIAL:+--serial "$SERIAL"} ${REGION:+--region "$REGION"})
+if [ -f "$SEEPROM" ]; then
+    SYS_CONFIG_ARGS+=(--seeprom "$SEEPROM")
 fi
 
 echo "== Checking prerequisites"
@@ -33,13 +42,17 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null \
     || fail "python3 3.10 or newer is needed"
 python3 -c 'import Crypto.Cipher.AES' 2>/dev/null \
     || fail "pycryptodome is missing (pip3 install -r requirements.txt)"
+[ -f "$OTP" ] || fail "$OTP not found: put the target console's otp.bin there"
 python3 -c '
 import sys, sys_config
+serial, region, seeprom, otp = (a or None for a in sys.argv[1:])
 try:
-    sys_config.parse_serial(sys.argv[1], sys.argv[2] or None)
+    if seeprom:
+        sys_config.sys_prod_from_seeprom(seeprom, serial, region, otp)
+    else:
+        sys_config.parse_serial(serial, region)
 except ValueError as e:
-    sys.exit(f"Error: {e}")' "$SERIAL" "$REGION" || exit 1
-[ -f "$OTP" ] || fail "$OTP not found: put the target console's otp.bin there"
+    sys.exit(f"Error: {e}")' "$SERIAL" "$REGION" "$([ -f "$SEEPROM" ] && echo "$SEEPROM")" "$OTP" || exit 1
 if [ -e "$REBUILD" ]; then
     fail "$REBUILD/ already exists. Move it away or delete it (rm -rf $REBUILD) to start from scratch."
 fi
@@ -70,7 +83,7 @@ python3 download_osv10.py --otp "$OTP" -o "$REBUILD/slc"
 
 echo
 echo "== Generating system.xml and sys_prod.xml"
-python3 sys_config.py --serial "$SERIAL" ${REGION:+--region "$REGION"} -o "$REBUILD/slc"
+python3 sys_config.py "${SYS_CONFIG_ARGS[@]}" --otp "$OTP" -o "$REBUILD/slc"
 
 echo
 echo "== Building the SLC image"
