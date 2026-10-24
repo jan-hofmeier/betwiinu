@@ -1,13 +1,11 @@
 # Betwiin v1.0, Copyright 2009 Haxx Enterprises (bushing@gmail.com)
 # Licensed to you under the terms of the GNU GPL v2.0; see http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 
-#!/usr/bin/env python3
 # pip3 install pycryptodome
 
 import os, sys, struct, hashlib, hmac
 from struct import unpack, pack
 from Crypto.Cipher import AES
-from array import array
 
 NUM_SUPER = 64
 CLUSTER_PER_SUPER = 16
@@ -15,6 +13,12 @@ TOTAL_CLUSTER = 0x8000
 PAGE_SIZE = 2048
 PAGES_PER_CLUSTER = 8
 CLUSTER_SIZE = PAGE_SIZE * PAGES_PER_CLUSTER
+
+# FAT entry values (anything below is the next cluster of a chain)
+FAT_CLUSTER_LAST = 0xFFFB      # last cluster of a chain
+FAT_CLUSTER_RESERVED = 0xFFFC  # boot1 slots, superblocks
+FAT_CLUSTER_BAD = 0xFFFD       # bad block
+FAT_CLUSTER_EMPTY = 0xFFFE     # free
 
 def pad(s,c,l):
 	if len(s)<l:
@@ -56,6 +60,20 @@ def parity(c):
     "Compute the parity of the 8-bit integer c."
     return CountBits(c) % 2
 
+def file_cluster_hmac(hmac_key, uid, name, fst_index, x3, chain_index, plaintext):
+	"""HMAC of a file cluster. name is the 12-byte name field of the FST entry;
+	the HMAC covers the decrypted cluster, not the encrypted one."""
+	digest_maker = hmac.new(hmac_key, b'', hashlib.sha1)
+	digest_maker.update(pack(">I12sIII", uid, name, chain_index, fst_index, x3) + b"\x00"*0x24)
+	digest_maker.update(plaintext)
+	return digest_maker.digest()
+
+def superblock_hmac(hmac_key, cluster_no, superblock):
+	"""HMAC of a superblock written at cluster_no."""
+	digest_maker = hmac.new(hmac_key, b'', hashlib.sha1)
+	digest_maker.update(b"\x00"*18 + pack(">H", cluster_no) + b"\x00"*44)
+	digest_maker.update(superblock)
+	return digest_maker.digest()
 
 def all_zeros(data: bytes):
 	for b in data:
@@ -63,37 +81,27 @@ def all_zeros(data: bytes):
 			return False
 	return True
 
+# Hamming ECC over a 512-byte chunk. Each ECC bit is the parity of a subset of
+# the data bits: the low 3 bit pairs select bits within a byte, the upper 9 the
+# byte index. Masking the chunk as one big integer and counting bits gives
+# those parities without looping over every byte.
+def _byte_mask(pattern):
+	return int.from_bytes(bytes([pattern]) * 512, "big")
+
+def _index_mask(j):
+	return int.from_bytes(bytes(0xff if (i >> j) & 1 else 0 for i in range(512)), "big")
+
+_ECC_MASKS = [_byte_mask(p) for p in (0xaa, 0xcc, 0xf0)] + [_index_mask(j) for j in range(9)]
+
 def calc_ecc(data):
-	a0 = array('B', [0,0,0,0,0,0,0,0,0,0,0,0])
-	a1 = array('B', [0,0,0,0,0,0,0,0,0,0,0,0])
-
-	for i, x in enumerate(data):
-		#x = ord(data[i])
-		for j in range(9):
-			if ((i >> j)&1)==1:
-				a1[3+j] ^= x
-			else:
-				a0[3+j] ^= x
-
-	x = a0[3] ^ a1[3]
-	a0[0] = x & 0x55
-	a1[0] = x & 0xaa
-	a0[1] = x & 0x33
-	a1[1] = x & 0xcc
-	a0[2] = x & 0x0f
-	a1[2] = x & 0xf0
-
-	for j in range(12):
-		a0[j] = parity(a0[j])
-		a1[j] = parity(a1[j])
-
-	r0 = 0
-	r1 = 0
-	for j in range(12):
-		r0 |= a0[j] << j
-		r1 |= a1[j] << j
-
-	return struct.pack("<HH",r0, r1)
+	n = int.from_bytes(data, "big")
+	total = n.bit_count() & 1
+	r0 = r1 = 0
+	for j, mask in enumerate(_ECC_MASKS):
+		p1 = (n & mask).bit_count() & 1
+		r1 |= p1 << j
+		r0 |= (total ^ p1) << j
+	return struct.pack("<HH", r0, r1)
 
 class NANDFormat:
 	def page_is(self, page, value):
@@ -288,17 +296,20 @@ class NANDFormatSpare(NANDFormat):
 		self.f.seek(num*2112+2048)
 		self.f.write(data[:64])
 
+	# Bad blocks (as seen in real dumps): pages 0 and 1 fully zeroed, data and
+	# spare. Only spare byte 0 is the marker - byte 1 is 0x00 on every written page.
+	def mark_bad_block(self, num):
+		num = int(num)
+		for p in (num * 64, num * 64 + 1):
+			self.set_page(p, b"\x00" * 2048)
+			self.set_spare(p, b"\x00" * 64)
+
 	def is_bad_page(self, num):
-		return self.is_bad_block(num//64)
+		return self.is_bad_block(num // 64)
 
 	def is_bad_block(self, num):
-		data1, spare1 = self._get_rawpage(num//64)
-		data2, spare2 = self._get_rawpage(num//64)
-		if ord(spare1[0]) != 0xff:
-			return True
-		if ord(spare1[1]) != 0xff:
-			return True
-		return False
+		num = int(num)
+		return any(self.get_spare(p)[0] != 0xff for p in (num * 64, num * 64 + 1))
 
 class NANDFormatSDDump(NANDFormat):
 	spare_supported = True
@@ -342,13 +353,16 @@ class NANDFormatSDDump(NANDFormat):
 		data, spare, bad = self._get_rawpage(num)
 		return bad
 	def is_bad_block(self, num):
-		data1, spare1, bad1 = self._get_rawpage(num//64)
-		data2, spare2, bad2 = self._get_rawpage(num//64)
+		num = int(num)
+		data1, spare1, bad1 = self._get_rawpage(num * 64)
+		data2, spare2, bad2 = self._get_rawpage(num * 64 + 1)
 		if bad1 or bad2:
 			return True
-		if ord(spare1[0]) != 0xff:
-			return True
-		if ord(spare1[1]) != 0xff:
+		if (all_zeros(data1) and all_zeros(spare1)) or (all_zeros(data2) and all_zeros(spare2)):
+			return False
+		b1 = spare1[0] if isinstance(spare1[0], int) else ord(spare1[0])
+		b2 = spare2[0] if isinstance(spare2[0], int) else ord(spare2[0])
+		if b1 != 0xff or b2 != 0xff:
 			return True
 		return False
 		
@@ -385,8 +399,8 @@ class SFFS_entry:
 			self.name = ""
 		self.mode, self.attr, self.sub, self.sib, \
 			self.size, self.uid, self.gid, self.x3 = unpack(">BBHHIIHI", buffer[12:])
-		self.hmac_buf1 = pack(">I12s", self.uid, buffer[0:12])
-		self.hmac_buf2 = pack(">II", i, self.x3) + b"\x00"*0x24
+		self.raw_name = bytes(buffer[0:12])
+		self.index = i
 		self.chain = None
 
 	def is_file(self):
@@ -399,23 +413,22 @@ class SFFS_entry:
 
 	def check_hmac(self, nand):
 		self.clusters = self.get_cluster_chain()
-		if self.mode & 1:
+		if self.is_file():
+			if self.name == "scfm.img":
+				return True
 			for x in range(0, len(self.clusters)):
-				calculated = self.calc_hmac(x)
+				calculated = self.calc_hmac(nand, x)
 				stored = nand.get_cluster_hmac(self.clusters[x])
 				if calculated != stored:
-					print("Calc HMAC: " + hexdump(self.calc_hmac(x)))
-					print("Stored HMAC: " + hexdump(nand.get_cluster_hmac(self.clusters[x])))
+					print("Calc HMAC: " + hexdump(calculated))
+					print("Stored HMAC: " + hexdump(stored))
 
 	def calc_hmac(self, nand, index, decrypted_cluster=None):
-		clusters = self.get_cluster_chain()
-		digest_maker = hmac.new(nand.hmac_key, b'', hashlib.sha1)
-		hmac_extra: bytes = self.hmac_buf1 + pack(">I", index) + self.hmac_buf2
-		digest_maker.update(hmac_extra)
+		if self.name == "scfm.img":
+			return b"\x00" * 20
 		if decrypted_cluster is None:
-			decrypted_cluster = nand.decrypt_cluster(clusters[index])
-		digest_maker.update(decrypted_cluster)
-		return digest_maker.digest()
+			decrypted_cluster = nand.decrypt_cluster(self.get_cluster_chain()[index])
+		return file_cluster_hmac(nand.hmac_key, self.uid, self.raw_name, self.index, self.x3, index, decrypted_cluster)
 
 	def __str__(self):
 		retval = SFFS_entry_mode(self.mode).__str__()
@@ -531,12 +544,7 @@ class SFFS:
 		self.data_buffer[0x4:0x8] = pack(">I", version)
 	
 	def calc_hmac(self, clusterno, hmac_key):
-		digest_maker = hmac.new(hmac_key, b'', hashlib.sha1)
-		hmac_extra = b"\x00"*18 + pack(">H", clusterno) + b"\x00"*44
-		digest_maker.update(hmac_extra)
-		digest_maker.update(self.data_buffer)
-		calc_hmac = digest_maker.digest()
-		return calc_hmac
+		return superblock_hmac(hmac_key, clusterno, self.data_buffer)
 		
 def read_file(filename):
 	myfile = open(filename, "rb")
@@ -551,24 +559,39 @@ def read_superblock(nand, cluster):
 	return superblock_data
 
 def find_newest_superblock(nand):
-	highest_superblock_version = 0
-	highest_superblock_cluster = 0
+	highest_valid_hmac_version = 0
+	highest_valid_hmac_cluster = None
+
+	highest_any_version = 0
+	highest_any_cluster = None
+
 	for superblock_cluster in range(TOTAL_CLUSTER - NUM_SUPER * CLUSTER_PER_SUPER, TOTAL_CLUSTER, CLUSTER_PER_SUPER):
-		superblock = SFFS(read_superblock(nand, superblock_cluster))
-		print("Superblock @ %x: %x" % (superblock_cluster, superblock.version()))
+		raw_superblock = read_superblock(nand, superblock_cluster)
+		if raw_superblock[:4] != b"SFS!":
+			continue
+		superblock = SFFS(raw_superblock)
 		version = superblock.version()
-		if version > highest_superblock_version and version < 0xffff7fff:
+		if version < 0xffff7fff:
+			if version > highest_any_version:
+				highest_any_version = version
+				highest_any_cluster = superblock_cluster
+
 			if nand.hmac_key:
 				calc_hmac = superblock.calc_hmac(superblock_cluster, nand.hmac_key)
-				stored_hmac = nand.get_cluster_hmac(superblock_cluster+0xf)
-				if calc_hmac != stored_hmac:
-					print("Calculated HMAC: " + hexdump(calc_hmac))
-					print("Stored HMAC: " + hexdump(stored_hmac))
+				stored_hmac = nand.get_cluster_hmac(superblock_cluster + 0xf)
+				if calc_hmac == stored_hmac:
+					if version > highest_valid_hmac_version:
+						print(f"Superblock @ {superblock_cluster:x}: version {version:x} (HMAC ok)")
+						highest_valid_hmac_version = version
+						highest_valid_hmac_cluster = superblock_cluster
 				else:
-					print("HMAC ok")
-					highest_superblock_version = superblock.version()
-					highest_superblock_cluster = superblock_cluster
-					highest_superblock = superblock
+					print(f"Superblock @ {superblock_cluster:x}: version {version:x} (HMAC mismatch)")
 
-	print("highest superblock: %x / %x" % (highest_superblock_version, highest_superblock_cluster))
-	return highest_superblock_cluster
+	if highest_valid_hmac_cluster is not None:
+		print("highest superblock: %x / %x" % (highest_valid_hmac_version, highest_valid_hmac_cluster))
+		return highest_valid_hmac_cluster
+	elif highest_any_cluster is not None:
+		print("Warning: No HMAC-verified superblock found. Using highest-version SFS! superblock (ISFSHAX / custom): %x / %x" % (highest_any_version, highest_any_cluster))
+		return highest_any_cluster
+	else:
+		raise ValueError("No valid SFS! superblock found in SLC image!")
